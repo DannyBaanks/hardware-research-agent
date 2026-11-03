@@ -79,10 +79,16 @@ class AdaUnlockAdapter(HardwareAdapter):
                 # 0 = DynamicPowerManagement=0x00 (disabled, prevents D3cold rail reset)
                 # 1 = coarse-grained D3hot
                 # 2 = fine-grained D3cold
+                configured = val in ("0", "0x00")
                 return {
                     "dynamic_power_management_raw": val,
-                    "d3cold_prevented": val in ("0", "0x00"),
-                    "status": "SECURE_PERSISTENT" if val in ("0", "0x00") else "VULNERABLE_TO_D3COLD_COLLAPSE"
+                    "driver_parameter_indicates_prevention": configured,
+                    "hardware_state_verified": False,
+                    "status": (
+                        "PARAMETER_CONFIGURED_NOT_HARDWARE_VERIFIED"
+                        if configured
+                        else "PARAMETER_DOES_NOT_INDICATE_PREVENTION"
+                    ),
                 }
             except Exception as e:
                 return {"error": str(e)}

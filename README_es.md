@@ -14,9 +14,9 @@
 | Componente | Comportamiento existente | Límite comprobado en código |
 |---|---|---|
 | Descubrimiento | Lee datos de CPU, perfiles ACPI y determinadas señales PCI/NPU/NVIDIA | Tiene supuestos de plataforma y rutas específicas; no es un inventario universal |
-| [Sentinel](core/sentinel.py) | Examina una cadena de comando y un nivel de riesgo proporcionado; bloquea patrones peligrosos y nivel 3 | **Clasificador consultivo basado en expresiones regulares**, no sandbox ni autenticación |
-| [Verificador antifake](core/verifier.py) | Compara medianas, hashes proporcionados, variación de control negativo y contradicciones de estado | No recopila por sí mismo mediciones físicas ni demuestra significación estadística formal |
-| [Controlador de rollback](core/rollback.py) | Ejecuta una restauración indicada y compara el estado devuelto por otra consulta | Es una **pieza independiente**, no una restauración automática conectada a un ejecutor de experimentos |
+| [Sentinel](core/sentinel.py) | Deriva el riesgo del comando y solo acepta comandos de solo lectura exactos y permitidos | Deniega cambios de estado; no es sandbox, autenticación de aprobación ni ejecutor |
+| [Verificador antifake](core/verifier.py) | Exige un SHA-256 válido por corrida, throughput finito y un delta explícito de control negativo | Los datos los proporciona el llamante; compara hashes, pero no los recalcula desde resultados crudos ni mide hardware |
+| [Controlador de rollback](core/rollback.py) | Restringe la ejecución a restaurar y consultar perfiles de energía, sin shell | Es una **pieza independiente**, no está conectada a un ejecutor de experimentos y no demuestra rollback extremo a extremo |
 | [Adaptador Ada](adapters/ada_adapter.py) | Detecta ciertos PCI IDs NVIDIA y consulta el parámetro de energía y `nvidia-smi` | Un parámetro del driver **no demuestra** que el unlock esté activo ni que sea seguro |
 | [Adaptador REA](adapters/rea_adapter.py) | Localiza herramientas y puede invocar análisis mediante Node o npx | **Ejecuta herramientas externas**; no las aísla ni garantiza ausencia de descargas |
 | Wrapper de Node | [bin/ihra.mjs](bin/ihra.mjs) llama al CLI Python | Node solo ofrece otra entrada; el núcleo del CLI es Python |
@@ -51,11 +51,11 @@ node bin/ihra.mjs discover
 |---|---|---|
 | `python3 -m core.cli discover` | Inventario y lectura de adaptadores | Parte de la detección usa rutas o identificadores específicos |
 | `python3 -m core.cli setup` | Informa ubicaciones de proyectos relacionados | Comprueba **rutas de desarrollo fijadas en el código**; no constituye verificación universal de instalación |
-| `python3 -m core.cli ada` | Lee estado NVIDIA y heurísticas de `D3cold` | Su texto de recomendación actual puede **exagerar** seguridad y mejora GEMM; exige verificación física |
-| `python3 -m core.cli sentinel 'wrmsr 0x199 0x2000'` | Demostración de rechazo de una cadena peligrosa | **No ejecuta** el comando mostrado; solamente clasifica texto |
+| `python3 -m core.cli ada` | Lee estado NVIDIA y su parámetro de gestión de energía | Informa `NOT_DEMONSTRATED`; el parámetro no prueba estado físico persistente ni seguridad del unlock |
+| `python3 -m core.cli sentinel 'powerprofilesctl get'` | Comprueba un comando exacto de solo lectura contra una lista permitida | Solo clasifica; no ejecuta. Deniega cambios de estado y comandos no incluidos |
 | `python3 -m core.cli inspect /ruta/al/archivo --tool inspect_malbolge` | Delega el análisis a REA | Puede ejecutar Node o `npx`; verifica dependencias antes de usarlo |
 
-**`--human-approved` no es una autenticación real:** es un booleano proporcionado por quien llama al programa. Del mismo modo, un veredicto `AUTHORIZED` **no equivale a permiso para ejecutar ese comando**, ni inicia automáticamente un ejecutor protegido o un rollback verificado.
+Sentinel ya no acepta `--human-approved` ni un nivel de riesgo del llamante como autoridad. Un veredicto para una operación de solo lectura **tampoco autoriza su ejecución**: no hay un ejecutor seguro ni una aprobación autenticada para escrituras.
 
 ## Método científico y trazabilidad
 
@@ -70,12 +70,11 @@ Antes de declarar una mejora se deben comparar condiciones equivalentes, usar co
 
 ### Limitaciones actuales del verificador y Sentinel
 
-- El verificador exige **al menos tres muestras por grupo** y compara **medianas**. Eso no constituye una prueba de significación estadística; sus valores fijos de confianza tampoco son intervalos de confianza.
-- Compara hashes **entregados por el llamante**, pero actualmente **no exige hashes presentes y no vacíos en todas las muestras**. Esa ausencia puede pasar inadvertida.
-- El control negativo usa un valor predeterminado de variación igual a cero si no se proporciona uno: **no demuestra que se ejecutó un control**.
+- El verificador exige **al menos tres muestras por grupo**, hashes SHA-256 válidos en **todas** las corridas, throughput finito y un delta explícito del control negativo; compara **medianas**. No es una prueba formal de significación y la evidencia del control sigue siendo proporcionada por el llamante.
+- Compara hashes **proporcionados**; no los recalcula desde artefactos crudos.
 - La regla para el falso positivo de `D3cold` rechaza una declaración de desbloqueo cuando el throughput permanece en stock. El programa **no lee BAR0 directamente** para demostrar la causa.
-- La clasificación por expresiones regulares y el nivel de riesgo indicado por el llamante **no forman una barrera segura** frente a órdenes arbitrarias generadas por un agente.
-- El rollback no está unido automáticamente al resultado del Sentinel. El controlador usa actualmente `shell=True`; no debe recibir comandos arbitrarios o no revisados.
+- Sentinel deriva el riesgo y solo permite comandos exactos de solo lectura incluidos en una lista; deniega el resto, incluidos benchmarks arbitrarios. Es un clasificador conservador, no un sandbox impuesto por el sistema operativo.
+- Los cambios de nivel 1/2 siguen deshabilitados: falta aprobación humana autenticada y un ejecutor que obligue al rollback. El helper independiente de rollback solo admite restaurar y consultar un perfil de energía.
 
 Consulta los [contratos de seguridad](docs/SAFETY_CONTRACTS.md), la [matriz de 12 escenarios adversariales propuestos](docs/ANTIFAKE_TEST_MATRIX.md) y el [plan de implementación](docs/IMPLEMENTATION_PLAN.md) para conocer el diseño de seguridad previsto.
 
@@ -98,7 +97,7 @@ Estos son **casos documentados que inspiraron IHRA**, no optimizaciones que el a
 python3 -m unittest discover -s tests -v
 ```
 
-El repositorio contiene **22 métodos `unittest` distribuidos en seis archivos**, contados directamente en el código versionado. Cubren adaptadores simulados, filtros de Sentinel, resultados de rollback, hashes y falsos positivos sintéticos de `D3cold`. **No se afirma aquí haber ejecutado y aprobado personalmente la suite ni una validación física extremo a extremo.** El árbol inspeccionado no contiene un workflow de GitHub Actions bajo `.github/workflows/`.
+El repositorio contiene **27 métodos `unittest` distribuidos en seis archivos**, contados directamente en el código versionado. Cubren adaptadores simulados, la lista permitida de Sentinel, rollback restringido, hashes obligatorios y falsos positivos sintéticos de `D3cold`. **No se afirma aquí una validación física extremo a extremo.** El árbol inspeccionado no contiene un workflow de GitHub Actions bajo `.github/workflows/`.
 
 Ver [fixtures](fixtures/), [esquema de experimento](schemas/experiment.schema.json) y [esquema de evidencia](schemas/evidence.schema.json). Las simulaciones **no son logs crudos de una máquina real**.
 

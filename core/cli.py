@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from .discovery import HardwareDiscovery
-from .sentinel import SentinelGate, AuthorizationGrant, SentinelVerdict
+from .sentinel import SentinelGate, SentinelVerdict
 from .verifier import AntiFakeVerifier, VerificationVerdict
 from .rollback import RollbackController
 from adapters.adapters import (
@@ -88,10 +88,12 @@ def cmd_ada(args):
         "telemetry": telemetry,
         "d3cold_analysis": d3cold,
         "recommendation": (
-            "D3cold collapse prevented. 2.00x GEMM unlock safe."
-            if d3cold.get("d3cold_prevented")
-            else "WARNING: Configure DynamicPowerManagement=0x00 to prevent D3cold Optimus rail collapse!"
-        )
+            "The driver parameter is configured to disable runtime dynamic power management; "
+            "hardware persistence and unlock safety remain NOT_DEMONSTRATED."
+            if d3cold.get("driver_parameter_indicates_prevention")
+            else "The driver parameter does not indicate D3cold prevention; hardware state is NOT_DEMONSTRATED."
+        ),
+        "recommendation_status": "NOT_DEMONSTRATED",
     }
     print(json.dumps(result, indent=2))
 
@@ -100,15 +102,9 @@ def cmd_sentinel(args):
     gate = SentinelGate()
     plan = {
         "experiment_id": "cli_eval_check",
-        "risk_tier": args.tier,
         "workload": {"command": args.action},
-        "rollback_plan": {
-            "restoration_command": "echo restore",
-            "verification_query": "echo verified",
-            "expected_state": "verified"
-        } if args.tier >= 1 else {}
     }
-    grant = gate.evaluate_plan(plan, has_human_approval=args.human_approved)
+    grant = gate.evaluate_plan(plan)
     result = {
         "action": args.action,
         "risk_tier": grant.risk_tier,
@@ -177,9 +173,7 @@ def main():
 
     # sentinel
     p_sent = subparsers.add_parser("sentinel", help="Evaluate an action against safety contracts")
-    p_sent.add_argument("action", help="Action string or command to check")
-    p_sent.add_argument("--tier", type=int, default=0, help="Risk tier (0=read-only, 1=reversible state, 2=high risk, 3=forbidden)")
-    p_sent.add_argument("--human-approved", action="store_true", help="Flag indicating explicit human gate authorization")
+    p_sent.add_argument("action", help="Exact read-only command to check; no command is executed")
     p_sent.set_defaults(func=cmd_sentinel)
 
     # setup

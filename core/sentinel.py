@@ -1,11 +1,14 @@
 import re
-from typing import Dict, Any, List, Optional
+import shlex
+from typing import Dict, Any, List
 from dataclasses import dataclass
 from enum import Enum
+
 
 class SentinelVerdict(Enum):
     AUTHORIZED = "AUTHORIZED"
     DENIED = "DENIED"
+
 
 @dataclass
 class AuthorizationGrant:
@@ -15,88 +18,95 @@ class AuthorizationGrant:
     reason: str
     allowed_operations: List[str]
 
+
 class SentinelGate:
-    """
-    Decoupled security and safety gatekeeper.
-    Evaluates experiment plans, enforces invariant boundaries, and blocks dangerous actions.
-    """
-    
-    # Strictly forbidden patterns (Tier 3 / Dangerous)
-    FORBIDDEN_PATTERNS = [
-        re.compile(r"\b(flashrom|nvramtool|fwupdtool)\b", re.IGNORECASE),
-        re.compile(r"\b(wrmsr|rdmsr)\b", re.IGNORECASE),
-        re.compile(r"\b(0x03b10[a-f0-9]+|smn|smu_message|smn_write)\b", re.IGNORECASE),
+    """Fail-closed classifier for a deliberately small set of read-only commands."""
+
+    READ_ONLY_COMMANDS = {
+        ("lscpu",),
+        ("lspci",),
+        ("sensors",),
+        ("powerprofilesctl", "get"),
+        ("nvidia-smi",),
+    }
+    TIER1_PROFILE_COMMAND = re.compile(
+        r"^powerprofilesctl\s+set\s+(?:power-saver|balanced|performance)$"
+    )
+    FORBIDDEN_PATTERNS = (
+        re.compile(r"\b(flashrom|nvramtool|fwupdtool|wrmsr|rdmsr)\b", re.IGNORECASE),
+        re.compile(r"\b(0x03b10[a-f0-9]+|smn|smu)(?:_write|_message)?\b", re.IGNORECASE),
         re.compile(r"/dev/cpu/\d+/msr", re.IGNORECASE),
         re.compile(r"\brm\s+-rf\b", re.IGNORECASE),
-        re.compile(r">/sys/firmware/acpi/tables", re.IGNORECASE),
-        re.compile(r">/sys/devices/system/cpu/cpufreq/boost\s*&&\s*reboot", re.IGNORECASE),
-    ]
+        re.compile(r">\s*/sys/(?:firmware|devices)/", re.IGNORECASE),
+    )
 
-    ALLOWED_REVERSIBLE_COMMANDS = [
-        re.compile(r"^powerprofilesctl\s+set\s+(power-saver|balanced|performance)$"),
-        re.compile(r"^python3\s+[\w\./-]+\.py(\s+[\w\./-]+)*$"),
-    ]
+    @staticmethod
+    def _deny(experiment_id: str, risk_tier: int, reason: str) -> AuthorizationGrant:
+        return AuthorizationGrant(
+            verdict=SentinelVerdict.DENIED,
+            experiment_id=experiment_id,
+            risk_tier=risk_tier,
+            reason=reason,
+            allowed_operations=[],
+        )
 
-    def evaluate_plan(self, plan: Dict[str, Any], has_human_approval: bool = False) -> AuthorizationGrant:
+    def evaluate_plan(self, plan: Dict[str, Any]) -> AuthorizationGrant:
+        if not isinstance(plan, dict):
+            return self._deny("UNKNOWN_EXP", 3, "Experiment plan must be an object")
+
         exp_id = plan.get("experiment_id", "UNKNOWN_EXP")
-        risk_tier = plan.get("risk_tier", 3)
-        workload = plan.get("workload", {})
-        cmd = workload.get("command", "")
-        rollback_plan = plan.get("rollback_plan", {})
+        if not isinstance(exp_id, str) or not exp_id:
+            exp_id = "UNKNOWN_EXP"
 
-        # 1. Tier 3 is strictly forbidden under all circumstances
-        if risk_tier >= 3:
-            return AuthorizationGrant(
-                verdict=SentinelVerdict.DENIED,
-                experiment_id=exp_id,
-                risk_tier=risk_tier,
-                reason="Tier 3 operations (firmware/SMU/MSR flashing) are strictly forbidden in V1",
-                allowed_operations=[]
+        workload = plan.get("workload")
+        command = workload.get("command") if isinstance(workload, dict) else None
+        if not isinstance(command, str) or not command or "\x00" in command:
+            return self._deny(exp_id, 3, "Plan must contain a non-empty command string")
+
+        try:
+            argv = tuple(shlex.split(command, posix=True))
+        except ValueError:
+            return self._deny(exp_id, 3, "Malformed command string")
+
+        if any(pattern.search(command) for pattern in self.FORBIDDEN_PATTERNS):
+            return self._deny(exp_id, 3, "Command matches a forbidden hardware or destructive-operation rule")
+
+        requested_tier = plan.get("risk_tier")
+        if requested_tier is not None and (
+            isinstance(requested_tier, bool)
+            or not isinstance(requested_tier, int)
+            or requested_tier not in range(4)
+        ):
+            return self._deny(exp_id, 3, "risk_tier must be an integer from 0 to 3")
+
+        if argv in self.READ_ONLY_COMMANDS and command == " ".join(argv):
+            derived_tier = 0
+        elif self.TIER1_PROFILE_COMMAND.fullmatch(command):
+            derived_tier = 1
+        else:
+            derived_tier = 3
+
+        if requested_tier is not None and requested_tier != derived_tier:
+            return self._deny(
+                exp_id,
+                derived_tier,
+                f"Caller-supplied risk_tier does not match the command's derived tier ({derived_tier})",
             )
 
-        # 2. Check for forbidden instruction patterns
-        for pattern in self.FORBIDDEN_PATTERNS:
-            if pattern.search(cmd):
-                return AuthorizationGrant(
-                    verdict=SentinelVerdict.DENIED,
-                    experiment_id=exp_id,
-                    risk_tier=risk_tier,
-                    reason=f"Command matches forbidden hardware safety pattern: '{pattern.pattern}'",
-                    allowed_operations=[]
-                )
+        if derived_tier == 0:
+            return AuthorizationGrant(
+                verdict=SentinelVerdict.AUTHORIZED,
+                experiment_id=exp_id,
+                risk_tier=0,
+                reason="Exact read-only command is on the Sentinel allowlist",
+                allowed_operations=[command],
+            )
 
-        # 3. Verify Rollback Contract for state-modifying tiers
-        if risk_tier >= 1:
-            if not rollback_plan:
-                return AuthorizationGrant(
-                    verdict=SentinelVerdict.DENIED,
-                    experiment_id=exp_id,
-                    risk_tier=risk_tier,
-                    reason="State-modifying experiment (Tier >= 1) missing mandatory rollback_plan",
-                    allowed_operations=[]
-                )
-            if not rollback_plan.get("restoration_command") or not rollback_plan.get("verification_query"):
-                return AuthorizationGrant(
-                    verdict=SentinelVerdict.DENIED,
-                    experiment_id=exp_id,
-                    risk_tier=risk_tier,
-                    reason="Rollback plan must define both restoration_command and verification_query",
-                    allowed_operations=[]
-                )
-            if not has_human_approval:
-                return AuthorizationGrant(
-                    verdict=SentinelVerdict.DENIED,
-                    experiment_id=exp_id,
-                    risk_tier=risk_tier,
-                    reason="Tier >= 1 operations require explicit human authorization grant",
-                    allowed_operations=[]
-                )
+        if derived_tier == 1:
+            return self._deny(
+                exp_id,
+                1,
+                "State changes are disabled: authenticated human authorization and an execution-coupled verified rollback are not implemented",
+            )
 
-        # Tier 0 (Read-Only) or Authorized Tier 1
-        return AuthorizationGrant(
-            verdict=SentinelVerdict.AUTHORIZED,
-            experiment_id=exp_id,
-            risk_tier=risk_tier,
-            reason="Experiment plan complies with IHRA safety boundaries",
-            allowed_operations=[cmd]
-        )
+        return self._deny(exp_id, 3, "Command is not on the exact read-only allowlist")

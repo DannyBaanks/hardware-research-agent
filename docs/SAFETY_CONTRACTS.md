@@ -1,5 +1,7 @@
 # Safety Contracts & Threat Model: IHRA
 
+> These contracts describe the intended policy, not guarantees already enforced by the prototype. Current code only classifies an exact read-only allowlist, denies state-changing Sentinel requests, and provides a standalone constrained power-profile rollback helper. It does not implement an experiment executor or an authenticated write-approval lifecycle; see the current implementation notes in `README.md`.
+
 ## 1. Core Safety Tenets
 
 1. **Safety Over Performance:** A system must never be made faster at the expense of making it less safe, less predictable, or less understandable.

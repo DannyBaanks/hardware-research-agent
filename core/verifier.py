@@ -1,7 +1,9 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 import statistics
+import math
+import re
 
 class VerificationVerdict(Enum):
     DEMONSTRATED = "DEMONSTRATED"
@@ -29,8 +31,22 @@ class AntiFakeVerifier:
         baseline_runs: List[Dict[str, Any]],
         intervention_runs: List[Dict[str, Any]],
         software_telemetry: Dict[str, Any],
-        negative_control_delta: float = 0.0,
+        negative_control_delta: Optional[float] = None,
     ) -> VerificationResult:
+
+        if (
+            not isinstance(baseline_runs, list)
+            or not isinstance(intervention_runs, list)
+            or not isinstance(software_telemetry, dict)
+        ):
+            return VerificationResult(
+                verdict=VerificationVerdict.NOT_DEMONSTRATED,
+                confidence=0.0,
+                reason="Baseline runs, intervention runs, and software telemetry must be structured inputs",
+                median_speedup_factor=1.0,
+                output_hash_invariant=False,
+                negative_control_invariant=False,
+            )
         
         # 1. Check repetition count (Reject Best-of-N peak hunting)
         if len(baseline_runs) < 3 or len(intervention_runs) < 3:
@@ -43,9 +59,26 @@ class AntiFakeVerifier:
                 negative_control_invariant=True
             )
 
-        # 2. Check Mathematical Determinism (Output Hash Invariance)
-        baseline_hashes = {r.get("output_sha256") for r in baseline_runs if "output_sha256" in r}
-        intervention_hashes = {r.get("output_sha256") for r in intervention_runs if "output_sha256" in r}
+        # 2. Require a SHA-256 digest for every run before comparing results.
+        hash_pattern = re.compile(r"^[0-9a-fA-F]{64}$")
+        all_runs = baseline_runs + intervention_runs
+        if any(
+            not isinstance(run, dict)
+            or not isinstance(run.get("output_sha256"), str)
+            or not hash_pattern.fullmatch(run["output_sha256"])
+            for run in all_runs
+        ):
+            return VerificationResult(
+                verdict=VerificationVerdict.NOT_DEMONSTRATED,
+                confidence=0.0,
+                reason="Every run must provide a valid 64-character SHA-256 output hash",
+                median_speedup_factor=1.0,
+                output_hash_invariant=False,
+                negative_control_invariant=False,
+            )
+
+        baseline_hashes = {r["output_sha256"].lower() for r in baseline_runs}
+        intervention_hashes = {r["output_sha256"].lower() for r in intervention_runs}
 
         if len(baseline_hashes) > 1 or len(intervention_hashes) > 1:
             return VerificationResult(
@@ -67,9 +100,36 @@ class AntiFakeVerifier:
                 negative_control_invariant=True
             )
 
-        # 3. Compute Medians
-        base_throughputs = [r["throughput"] for r in baseline_runs]
-        inter_throughputs = [r["throughput"] for r in intervention_runs]
+        # 3. Validate measurements and compute medians.
+        try:
+            base_throughputs = [r["throughput"] for r in baseline_runs]
+            inter_throughputs = [r["throughput"] for r in intervention_runs]
+        except KeyError:
+            return VerificationResult(
+                verdict=VerificationVerdict.NOT_DEMONSTRATED,
+                confidence=0.0,
+                reason="Every run must provide a throughput measurement",
+                median_speedup_factor=1.0,
+                output_hash_invariant=True,
+                negative_control_invariant=False,
+            )
+
+        measurements = base_throughputs + inter_throughputs
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+            for value in measurements
+        ):
+            return VerificationResult(
+                verdict=VerificationVerdict.NOT_DEMONSTRATED,
+                confidence=0.0,
+                reason="Throughput measurements must be finite positive numbers",
+                median_speedup_factor=1.0,
+                output_hash_invariant=True,
+                negative_control_invariant=False,
+            )
         
         base_median = statistics.median(base_throughputs)
         inter_median = statistics.median(inter_throughputs)
@@ -77,6 +137,20 @@ class AntiFakeVerifier:
         speedup = inter_median / base_median if base_median > 0 else 1.0
 
         # 4. Check Negative Control Invariance
+        if (
+            isinstance(negative_control_delta, bool)
+            or not isinstance(negative_control_delta, (int, float))
+            or not math.isfinite(negative_control_delta)
+        ):
+            return VerificationResult(
+                verdict=VerificationVerdict.NOT_DEMONSTRATED,
+                confidence=0.0,
+                reason="A finite negative_control_delta from an executed control is required",
+                median_speedup_factor=speedup,
+                output_hash_invariant=True,
+                negative_control_invariant=False,
+            )
+
         if abs(negative_control_delta) > 0.03: # More than 3% drift on negative control
             return VerificationResult(
                 verdict=VerificationVerdict.NOT_DEMONSTRATED,

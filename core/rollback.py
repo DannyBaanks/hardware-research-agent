@@ -1,6 +1,8 @@
+import shlex
 import subprocess
-from typing import Dict, Any, Optional
+from typing import Optional, Tuple
 from dataclasses import dataclass
+
 
 @dataclass
 class RollbackReceipt:
@@ -10,19 +12,44 @@ class RollbackReceipt:
     verified_state: str
     error_message: Optional[str] = None
 
+
 class RollbackController:
-    """
-    Independent rollback supervisor.
-    Ensures that any intervention can be reverted and verified.
-    """
+    """Runs only the supported power-profile restore/query pair; not an experiment executor."""
+
+    PROFILES = {"power-saver", "balanced", "performance"}
+
+    @classmethod
+    def _parse_command(cls, command: str) -> Tuple[str, ...]:
+        if not isinstance(command, str) or "\x00" in command:
+            raise ValueError("Command must be a NUL-free string")
+        try:
+            return tuple(shlex.split(command, posix=True))
+        except ValueError as exc:
+            raise ValueError("Malformed command string") from exc
+
+    @classmethod
+    def _validate_query(cls, query_cmd: str) -> Tuple[str, ...]:
+        argv = cls._parse_command(query_cmd)
+        if argv != ("powerprofilesctl", "get"):
+            raise ValueError("Verification query must be exactly 'powerprofilesctl get'")
+        return argv
+
+    @classmethod
+    def _validate_restore(cls, restore_cmd: str, expected_state: str) -> Tuple[str, ...]:
+        argv = cls._parse_command(restore_cmd)
+        if expected_state not in cls.PROFILES:
+            raise ValueError("Expected state must be a supported power profile")
+        if argv != ("powerprofilesctl", "set", expected_state):
+            raise ValueError("Restore command must set the declared expected power profile")
+        return argv
 
     def capture_state(self, query_cmd: str) -> str:
-        """Runs the verification query and records the baseline value."""
-        try:
-            res = subprocess.run(query_cmd, shell=True, capture_output=True, text=True, check=True)
-            return res.stdout.strip()
-        except Exception as e:
-            return f"ERROR: {e}"
+        """Captures the current supported power-profile state."""
+        argv = self._validate_query(query_cmd)
+        result = subprocess.run(
+            argv, capture_output=True, text=True, check=True, timeout=5
+        )
+        return result.stdout.strip()
 
     def execute_and_verify_rollback(
         self,
@@ -31,35 +58,36 @@ class RollbackController:
         verify_query: str,
         expected_state: str
     ) -> RollbackReceipt:
-        """Executes rollback command and confirms post-restoration state matches expected value."""
+        """Restores a supported power profile and confirms it with a fresh query."""
         try:
-            # Execute restore command
-            subprocess.run(restore_cmd, shell=True, capture_output=True, text=True, check=True)
-            
-            # Verify state
-            verify_res = subprocess.run(verify_query, shell=True, capture_output=True, text=True, check=True)
-            current_state = verify_res.stdout.strip()
-
+            restore_argv = self._validate_restore(restore_cmd, expected_state)
+            verify_argv = self._validate_query(verify_query)
+            subprocess.run(
+                restore_argv, capture_output=True, text=True, check=True, timeout=5
+            )
+            verify_result = subprocess.run(
+                verify_argv, capture_output=True, text=True, check=True, timeout=5
+            )
+            current_state = verify_result.stdout.strip()
             if current_state == expected_state:
                 return RollbackReceipt(
                     success=True,
                     experiment_id=experiment_id,
                     target_command=restore_cmd,
-                    verified_state=current_state
-                )
-            else:
-                return RollbackReceipt(
-                    success=False,
-                    experiment_id=experiment_id,
-                    target_command=restore_cmd,
                     verified_state=current_state,
-                    error_message=f"State mismatch: expected '{expected_state}', got '{current_state}'"
                 )
-        except Exception as e:
+            return RollbackReceipt(
+                success=False,
+                experiment_id=experiment_id,
+                target_command=restore_cmd,
+                verified_state=current_state,
+                error_message=f"State mismatch: expected '{expected_state}', got '{current_state}'",
+            )
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
             return RollbackReceipt(
                 success=False,
                 experiment_id=experiment_id,
                 target_command=restore_cmd,
                 verified_state="FAILED",
-                error_message=str(e)
+                error_message=str(exc),
             )

@@ -14,9 +14,9 @@
 | Component | Present behavior | Boundary |
 |---|---|---|
 | Hardware discovery | Reads CPU features, platform profiles, selected PCI/NPU signals and optional NVIDIA telemetry | Some hardware assumptions and fixed paths are platform-specific; not a full portable inventory |
-| [Sentinel](core/sentinel.py) | Evaluates a supplied command string and caller-specified risk tier; rejects several dangerous patterns and tier 3 | **Advisory regex classifier**, not an execution sandbox or proof of human authorization |
-| [AntiFake verifier](core/verifier.py) | Compares median throughput, supplied hashes, negative-control delta and contradictory unlock claims | Requires caller-supplied data; does not independently collect physical readbacks or certify statistical significance |
-| [Rollback controller](core/rollback.py) | Runs an explicitly provided restoration command, then compares a verification result | **Separate helper**, not wired to an automatic experiment runner; currently uses shell execution |
+| [Sentinel](core/sentinel.py) | Derives risk from the command and accepts only exact, allowlisted read-only commands | Denies all state changes; not an execution sandbox, authenticated approval system, or executor |
+| [AntiFake verifier](core/verifier.py) | Requires a valid SHA-256 per run, finite throughput values, an explicit negative-control delta, and checks contradictory unlock claims | Evidence is caller-supplied; hashes are compared, not recomputed from raw outputs; no physical readback or formal significance test |
+| [Rollback controller](core/rollback.py) | Restricts execution to a power-profile restore/query pair without a shell | **Separate helper**, not wired to an experiment runner; does not establish an end-to-end rollback guarantee |
 | [Ada adapter](adapters/ada_adapter.py) | Detects selected NVIDIA PCI IDs, reads the driver's power-management parameter and optional `nvidia-smi` telemetry | A driver setting is **not proof** that the hardware unlock is active or safe |
 | [REA adapter](adapters/rea_adapter.py) | Locates a local REA runner or a Node/npx route and can invoke a requested analysis tool | This **executes external tooling**; it is not a sandbox and may invoke npm tooling |
 | Node wrapper | [bin/ihra.mjs](bin/ihra.mjs) dispatches to the Python CLI | Node is a convenience wrapper; Python does the work |
@@ -51,11 +51,11 @@ node bin/ihra.mjs discover
 |---|---|---|
 | `python3 -m core.cli discover` | Prints inventory and adapter results | Some GPU/NPU detections rely on a fixed device list or path |
 | `python3 -m core.cli setup` | Reports companion repository locations | Currently checks **hard-coded developer-directory paths**; not a general installation checker |
-| `python3 -m core.cli ada` | Reads NVIDIA state and an inferred D3cold risk | Its current recommendation text may **overstate** unlock safety or GEMM gain; verify physically |
-| `python3 -m core.cli sentinel 'wrmsr 0x199 0x2000'` | Demonstrates denial of a forbidden command string | This is **classification only**: the string is not executed |
+| `python3 -m core.cli ada` | Reads NVIDIA state and its driver power-management parameter | Reports `NOT_DEMONSTRATED`; a configured parameter is not proof of persistent hardware state or unlock safety |
+| `python3 -m core.cli sentinel 'powerprofilesctl get'` | Checks an exact read-only command against the allowlist | Classification only; no command is executed. All state-changing and unlisted commands are denied |
 | `python3 -m core.cli inspect /path/to/file --tool inspect_malbolge` | Delegates analysis to REA | May start a local Node tool or `npx`; inspect dependencies before running |
 
-**Do not use `--human-approved` as an authentication mechanism.** It is only a boolean argument supplied by the caller. Likewise, a Sentinel `AUTHORIZED` result **does not grant permission to run that command** and does not automatically trigger a safe executor or verified rollback.
+The Sentinel no longer accepts `--human-approved` or a caller-provided tier as authority. A read-only allowlist verdict still **does not grant permission to execute a command**; no safe experiment executor or authenticated write approval exists.
 
 ## Protocol and evidence
 
@@ -70,12 +70,11 @@ Before making a performance claim, the methodology calls for a comparable baseli
 
 ### Current antifake implementation — important gaps
 
-- The verifier requires **at least three runs per side** and computes a **median throughput ratio**. This is not a formal significance test; fixed confidence values should not be presented as statistical confidence intervals.
-- The output-hash comparison detects divergent **supplied** hashes, but currently does **not require a nonempty hash in every run**. Missing hashes can therefore escape this check.
-- A negative-control delta defaults to zero if omitted. Zero supplied by default is **not evidence** that a real negative control was run.
+- The verifier requires **at least three runs per side**, valid SHA-256-formatted output hashes for **every** run, finite positive throughput values, and an explicit negative-control delta; it computes a **median throughput ratio**. This is not a formal significance test, and the control evidence remains caller-supplied.
+- Hash comparison detects divergence in the **supplied** digests; it does not recalculate them from raw output artifacts.
 - The special D3cold rule rejects a software-unlocked claim when measured throughput stays near stock; the verifier does **not itself read BAR0** or prove the cause of the mismatch.
-- The Sentinel's command-pattern checks and caller-provided tier are **not sufficient** for adversarial command authorization. Do not use them as a security boundary for arbitrary generated shell commands.
-- Rollback is not automatically coupled to the CLI's Sentinel verdict. The current controller calls commands via `shell=True`; restrict it to reviewed inputs in a controlled environment.
+- The Sentinel now derives the tier and allows only exact, no-argument read-only commands; all other commands, including arbitrary benchmarks, are denied. This is a conservative classifier, not an OS-enforced sandbox.
+- Tier 1/2 changes remain disabled because IHRA has no authenticated human-approval mechanism or experiment executor coupled to mandatory restoration. The separate rollback helper supports only a constrained power-profile restore/query pair.
 
 See [Safety contracts](docs/SAFETY_CONTRACTS.md), [12 proposed adversarial scenarios](docs/ANTIFAKE_TEST_MATRIX.md), and the [implementation plan](docs/IMPLEMENTATION_PLAN.md) for the stronger design intended by the project.
 
@@ -98,7 +97,7 @@ These are **source case studies**, not optimizations performed automatically by 
 python3 -m unittest discover -s tests -v
 ```
 
-The repository contains **22 `unittest` test methods** across six files (counted from the checked-in test sources). They exercise mocked adapters, regex denials, rollback-result checks, hashes and synthetic D3cold failures. **This README does not claim an independently observed passing CI run** or physical end-to-end hardware validation. There is currently no GitHub Actions workflow under `.github/workflows/` in the inspected tree.
+The repository contains **27 `unittest` test methods** across six files (counted from the checked-in test sources). They exercise mocked adapters, Sentinel allowlist denials, constrained rollback behavior, required hashes and synthetic D3cold failures. **This README does not claim an independently observed CI run** or physical end-to-end hardware validation. There is currently no GitHub Actions workflow under `.github/workflows/` in the inspected tree.
 
 Consult [fixtures](fixtures/), [experiment schema](schemas/experiment.schema.json) and [evidence schema](schemas/evidence.schema.json) for the current test contracts. Synthetic fixtures are not raw hardware execution logs.
 
