@@ -108,6 +108,6 @@ Consult [fixtures](fixtures/), [experiment schema](schemas/experiment.schema.jso
 - No automatic overclocking, undervolting, BIOS modification or thermal-limit bypass is provided or endorsed.
 - Never publish hostnames, serials, GPU UUIDs, tokens or raw private traces without a separate redaction review.
 
-**License status needs a repository decision:** `package.json` currently declares `MIT`, while earlier documentation proposed `Apache-2.0`, and the inspected repository root has **no `LICENSE` file**. This README does not assert that a specific license grant is finalized. Choose a license, add its actual license text, and align package metadata and documentation before a release.
+**License: MIT.** The repository root contains the MIT grant in [`LICENSE`](LICENSE), and `package.json` declares the same identifier. DannyBaanks selected MIT; the earlier Apache-2.0 proposal is superseded.
 
 **Status:** publicly available **HRA-00 research prototype**. See [ROADMAP.md](ROADMAP.md) for the original staged proposal; older notes referring to a not-yet-created public repository are historical, not the current publication state.

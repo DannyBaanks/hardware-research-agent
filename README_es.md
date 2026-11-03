@@ -108,6 +108,6 @@ Ver [fixtures](fixtures/), [esquema de experimento](schemas/experiment.schema.js
 - IHRA no incluye ni recomienda overclock, undervolt, cambios de BIOS o desbloqueo de protecciones térmicas automáticos.
 - La publicación de trazas exige revisar nombres de equipos, seriales, UUID, tokens y otros identificadores privados.
 
-**Licencia pendiente de unificación:** `package.json` declara `MIT`, el README anterior proponía `Apache-2.0` y el árbol raíz revisado **no contiene un archivo `LICENSE`**. Este documento no presupone que una licencia definitiva esté formalizada. Antes de una distribución estable, elige la licencia, incorpora su texto y alinea la documentación y metadatos.
+**Licencia: MIT.** El archivo raíz [`LICENSE`](LICENSE) contiene la concesión MIT y `package.json` declara el mismo identificador. DannyBaanks eligió MIT; la propuesta anterior de Apache-2.0 queda reemplazada.
 
 **Estado actual:** **prototipo público HRA-00**. El [ROADMAP.md](ROADMAP.md) es la propuesta histórica de fases; las menciones antiguas a un repositorio aún no publicado no describen el estado actual.
