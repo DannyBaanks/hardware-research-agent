@@ -16,7 +16,7 @@ from .discovery import HardwareDiscovery
 from .sentinel import SentinelGate, SentinelVerdict
 from .verifier import AntiFakeVerifier, VerificationVerdict
 from .rollback import RollbackController
-from .executor import DryRunExecutor
+from .executor import DryRunExecutor, SyntheticWorkloadExecutor
 from adapters.adapters import (
     LinuxInventoryAdapter,
     LinuxCpuPerfAdapter,
@@ -124,6 +124,13 @@ def cmd_dry_run(args):
     print(json.dumps(receipt.to_dict(), indent=2))
 
 
+def cmd_run_synthetic(args):
+    receipt = SyntheticWorkloadExecutor().run(args.workload)
+    print(json.dumps(receipt.to_dict(), indent=2))
+    if receipt.status != "COMPLETED":
+        sys.exit(1)
+
+
 def cmd_setup(args):
     """Checks and reports repository and toolchain status for agents."""
     base_dir = Path.home() / "Development"
@@ -193,6 +200,18 @@ def main():
         help="Bundled synthetic fixture to replay",
     )
     p_dry.set_defaults(func=cmd_dry_run)
+
+    # run a single reviewed synthetic workload inside a rootless sandbox
+    p_run = subparsers.add_parser(
+        "run-synthetic",
+        help="Run the fixed synthetic CPU workload in a rootless bubblewrap sandbox",
+    )
+    p_run.add_argument(
+        "workload",
+        choices=[SyntheticWorkloadExecutor.WORKLOAD_ID],
+        help="Reviewed workload identifier; arbitrary commands are not accepted",
+    )
+    p_run.set_defaults(func=cmd_run_synthetic)
 
     # setup
     p_setup = subparsers.add_parser("setup", help="Verify stack paths and dependencies")

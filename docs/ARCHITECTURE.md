@@ -1,6 +1,6 @@
 # Architecture Specification: Hardware Research Agent (IHRA)
 
-> This document is a target architecture, not a description of currently enforced guarantees. The current `core/executor.py` only replays fixed synthetic fixtures through the verifier; it does not execute workloads, isolate processes, request authorization, or alter hardware/system state.
+> This document is a target architecture, not a description of currently enforced guarantees. `core/executor.py` replays fixed synthetic fixtures and can run one pinned CPU-only workload inside a rootless Bubblewrap sandbox. It does not execute proposed experiments, request authorization, access hardware controls, or alter persistent hardware/system state.
 
 ## 1. System Overview
 
@@ -88,7 +88,7 @@ The **ISyCo Hardware Research Agent (IHRA)** is a modular, security-hardened Lin
 
 ### 2.5 Proposed Autonomous Execution Owner (`core/executor.py`)
 * **Role:** Executes pre-compiled whitelist actions.
-* **Implementation status:** The production execution owner described here is not implemented. The current module only provides a fixture replay dry-run.
+* **Implementation status:** The production execution owner described here is not implemented. The current module provides a fixture replay dry-run and a separate, fixed synthetic CPU workload sandbox; neither executes experiment plans or supports arbitrary workloads.
 * **Invariants:**
   * Validates the `AuthorizationGrant` before dispatching any command.
   * Continuously queries thermal and memory sensors during workload execution.

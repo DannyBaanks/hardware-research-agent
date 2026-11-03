@@ -17,7 +17,8 @@
 | [Sentinel](core/sentinel.py) | Deriva el riesgo del comando y solo acepta comandos de solo lectura exactos y permitidos | Deniega cambios de estado; no es sandbox, autenticación de aprobación ni ejecutor |
 | [Verificador antifake](core/verifier.py) | Exige un SHA-256 válido por corrida, throughput finito y un delta explícito de control negativo | Los datos los proporciona el llamante; compara hashes, pero no los recalcula desde resultados crudos ni mide hardware |
 | [Controlador de rollback](core/rollback.py) | Restringe la ejecución a restaurar y consultar perfiles de energía, sin shell | Es una **pieza independiente**, no está conectada a un ejecutor de experimentos y no demuestra rollback extremo a extremo |
-| [Ejecutor dry-run](core/executor.py) | Reproduce dos fixtures sintéticos de evidencia a través del verificador | **No ejecuta workloads ni comandos, no accede al hardware ni cambia el sistema**; no es un ejecutor autónomo |
+| [Ejecutor dry-run](core/executor.py) | Reproduce dos fixtures sintéticos de evidencia a través del verificador | **No ejecuta workloads, no accede al hardware ni cambia el sistema** |
+| [Ejecutor de workload sintético](core/executor.py) | Ejecuta únicamente el workload CPU fijo `sha256-chain-v1` en Bubblewrap rootless, con montajes del host de solo lectura y temporales aislados | No es un ejecutor de benchmarks o experimentos; no acepta comandos arbitrarios, no lee/controla hardware ni escribe estado persistente del host |
 | [Adaptador Ada](adapters/ada_adapter.py) | Detecta ciertos PCI IDs NVIDIA y consulta el parámetro de energía y `nvidia-smi` | Un parámetro del driver **no demuestra** que el unlock esté activo ni que sea seguro |
 | [Adaptador REA](adapters/rea_adapter.py) | Localiza herramientas y puede invocar análisis mediante Node o npx | **Ejecuta herramientas externas**; no las aísla ni garantiza ausencia de descargas |
 | Wrapper de Node | [bin/ihra.mjs](bin/ihra.mjs) llama al CLI Python | Node solo ofrece otra entrada; el núcleo del CLI es Python |
@@ -26,7 +27,7 @@ La [especificación arquitectónica](docs/ARCHITECTURE.md) describe un futuro ej
 
 ## Inicio rápido responsable (Linux)
 
-**Requisitos:** Python 3 y su biblioteca estándar. Node.js es opcional; algunas consultas necesitan herramientas del sistema instaladas.
+**Requisitos:** Python 3 y su biblioteca estándar. El comando de workload fijo también requiere `/usr/bin/bwrap` y `/usr/bin/python3` confiables (propiedad de root) y user namespaces rootless habilitados. Node.js es opcional; algunas consultas necesitan herramientas del sistema instaladas.
 
 ```bash
 git clone https://github.com/DannyBaanks/hardware-research-agent.git
@@ -39,8 +40,11 @@ python3 -m unittest discover -s tests -v
 # Consultar inventario y telemetría seleccionada
 python3 -m core.cli discover
 
-# Reproducir evidencia sintética (no ejecuta comandos ni workloads)
+# Reproducir evidencia sintética (no ejecuta workloads)
 python3 -m core.cli dry-run ada_d3cold_false_positive
+
+# Ejecutar el único workload CPU fijo en sandbox rootless
+python3 -m core.cli run-synthetic sha256-chain-v1
 
 # Alternativa usando Node.js
 node bin/ihra.mjs discover
@@ -58,9 +62,10 @@ node bin/ihra.mjs discover
 | `python3 -m core.cli ada` | Lee estado NVIDIA y su parámetro de gestión de energía | Informa `NOT_DEMONSTRATED`; el parámetro no prueba estado físico persistente ni seguridad del unlock |
 | `python3 -m core.cli sentinel 'powerprofilesctl get'` | Comprueba un comando exacto de solo lectura contra una lista permitida | Solo clasifica; no ejecuta. Deniega cambios de estado y comandos no incluidos |
 | `python3 -m core.cli dry-run <fixture>` | Reproduce uno de dos fixtures sintéticos incluidos usando el verificador | Solo usa datos fixture; no ejecuta workloads/comandos, no lee ni modifica hardware y no hace rollback |
+| `python3 -m core.cli run-synthetic sha256-chain-v1` | Ejecuta una cadena fija de 20.000 pasos SHA-256 en un sandbox rootless de Bubblewrap | Requiere Bubblewrap y Python del sistema confiables; no acepta comandos o scripts, no accede a telemetría/control de hardware ni persiste cambios en el host |
 | `python3 -m core.cli inspect /ruta/al/archivo --tool inspect_malbolge` | Delega el análisis a REA | Puede ejecutar Node o `npx`; verifica dependencias antes de usarlo |
 
-Sentinel ya no acepta `--human-approved` ni un nivel de riesgo del llamante como autoridad. Un veredicto para una operación de solo lectura **tampoco autoriza su ejecución**: el replay dry-run no es un ejecutor de workloads y no hay aprobación autenticada para escrituras.
+Sentinel ya no acepta `--human-approved` ni un nivel de riesgo del llamante como autoridad. Un veredicto para una operación de solo lectura **tampoco autoriza su ejecución**. El ejecutor sintético es un sandbox estrecho para un workload fijo; no está conectado a Sentinel, adaptadores de hardware, planes de experimento ni rollback. No hay aprobación autenticada para escrituras.
 
 ## Método científico y trazabilidad
 
@@ -102,7 +107,7 @@ Estos son **casos documentados que inspiraron IHRA**, no optimizaciones que el a
 python3 -m unittest discover -s tests -v
 ```
 
-El repositorio contiene **33 métodos `unittest` distribuidos en siete archivos**, contados directamente en el código versionado. Cubren adaptadores simulados, Sentinel, rollback restringido, límites del verificador y replay de fixtures sintéticos. El comando dry-run valida únicamente el replay; **no es un ejecutor autónomo ni opera hardware**. No se afirma una validación física extremo a extremo. El árbol inspeccionado no contiene un workflow de GitHub Actions bajo `.github/workflows/`.
+Las pruebas `unittest` cubren adaptadores simulados, denegaciones de Sentinel, rollback restringido, límites del verificador, hashes requeridos, replay de fixtures y el ejecutor del workload sintético fijo. Las pruebas del executor comprueban su contrato, digest esperado, comportamiento fail-closed y resultados ante límites; una ejecución correcta en sandbox no demuestra rendimiento de hardware ni un ciclo autónomo de experimentación. No se afirma una validación física extremo a extremo. El árbol inspeccionado no contiene un workflow de GitHub Actions bajo `.github/workflows/`.
 
 Ver [fixtures](fixtures/), [esquema de experimento](schemas/experiment.schema.json) y [esquema de evidencia](schemas/evidence.schema.json). Las simulaciones **no son logs crudos de una máquina real**.
 

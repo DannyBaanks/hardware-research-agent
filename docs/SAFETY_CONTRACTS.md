@@ -1,6 +1,6 @@
 # Safety Contracts & Threat Model: IHRA
 
-> These contracts describe the intended policy, not guarantees already enforced by the prototype. Current code classifies an exact read-only allowlist, denies state-changing Sentinel requests, replays fixed synthetic fixtures without host actions, and provides a standalone constrained power-profile rollback helper. It does not implement a workload executor or authenticated write-approval lifecycle; see `README.md`.
+> These contracts describe the intended policy, not guarantees already enforced by the prototype. Current code classifies an exact read-only allowlist, denies state-changing Sentinel requests, replays fixed synthetic fixtures, runs one pinned CPU-only workload in a rootless Bubblewrap sandbox, and provides a standalone constrained power-profile rollback helper. It does not implement an experiment-plan executor or authenticated write-approval lifecycle; see `README.md`.
 
 ## 1. Core Safety Tenets
 
