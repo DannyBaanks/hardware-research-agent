@@ -13,6 +13,9 @@ from core.experiment import (
     SyntheticExperimentRunner,
 )
 from core.executor import SandboxUnavailableError, SyntheticWorkloadExecutor, WorkloadReceipt
+from core.planning import SyntheticExperimentProposal
+
+from tests.tty_test_utils import authorize_in_pty
 
 
 ADVERSARIAL_CASES = {
@@ -166,13 +169,94 @@ class TestSyntheticExperimentRunner(unittest.TestCase):
 
     def _run(self, executor, digest=None, binary_check=None, plan=None):
         runner = self._runner(executor, binary_check)
+        plan = plan or self.plan
+        proposal = SyntheticExperimentProposal(
+            schema_version=1,
+            proposal_id="test-fixed-proposal",
+            rationale="Authorize the fixed repeatability plan in a PTY test.",
+            plan=plan,
+        )
+        authorization = authorize_in_pty(
+            digest or plan.sha256, proposal.sha256, proposal.canonical_bytes().decode("ascii")
+        )
         return runner.run(
-            plan or self.plan,
-            authorized_plan_sha256=digest or self.plan.sha256,
+            plan,
+            authorization=authorization,
+            proposal_bytes=proposal.canonical_bytes(),
         )
 
     def _campaign_files(self, result):
         return {path.name: path for path in Path(result.evidence_dir).iterdir()}
+
+    def test_runner_api_denies_without_a_tty_authorization(self):
+        executor = FakeExecutor([self._receipt()])
+        result = self._runner(executor).run(self.plan)
+        self.assertEqual(result.status, "DENIED")
+        self.assertEqual(result.verdict, "DENY")
+        self.assertEqual(executor.calls, 0)
+        self.assertFalse(self.evidence_base.exists())
+
+    def test_runner_rejects_authorization_subclass_override(self):
+        class ForgedAuthorization:
+            def consume(self, plan_sha256, proposal_sha256):
+                return proposal_sha256
+
+        executor = FakeExecutor([self._receipt()])
+        result = self._runner(executor).run(
+            self.plan,
+            authorization=ForgedAuthorization(),
+            proposal_bytes=b"{}",
+        )
+        self.assertEqual(result.status, "DENIED")
+        self.assertEqual(executor.calls, 0)
+
+    def test_runner_denies_when_proposal_digest_differs_from_tty_consent(self):
+        executor = FakeExecutor([self._receipt()])
+        runner = self._runner(executor)
+        proposal = SyntheticExperimentProposal(
+            schema_version=1,
+            proposal_id="test-fixed-proposal",
+            rationale="Authorize the fixed repeatability plan in a PTY test.",
+            plan=self.plan,
+        )
+        authorization = authorize_in_pty(
+            self.plan.sha256, proposal.sha256, proposal.canonical_bytes().decode("ascii")
+        )
+        result = runner.run(
+            self.plan,
+            authorization=authorization,
+            proposal_bytes=SyntheticExperimentProposal(
+                schema_version=1,
+                proposal_id="test-fixed-proposal",
+                rationale="Changed proposal after TTY authorization.",
+                plan=self.plan,
+            ).canonical_bytes(),
+        )
+        self.assertEqual(result.status, "DENIED")
+        self.assertIn("proposal digest", result.reason)
+        self.assertEqual(executor.calls, 0)
+
+    def test_plan_changed_after_tty_consent_is_denied_before_execution(self):
+        executor = FakeExecutor([self._receipt()])
+        runner = self._runner(executor)
+        proposal = SyntheticExperimentProposal(
+            schema_version=1,
+            proposal_id="test-fixed-proposal",
+            rationale="Authorize the fixed repeatability plan in a PTY test.",
+            plan=self.plan,
+        )
+        authorization = authorize_in_pty(
+            self.plan.sha256, proposal.sha256, proposal.canonical_bytes().decode("ascii")
+        )
+        mutated_plan = SyntheticExperimentPlan.fixed_repeatability_plan()
+        object.__setattr__(mutated_plan, "samples", 4)
+        result = runner.run(
+            mutated_plan,
+            authorization=authorization,
+            proposal_bytes=proposal.canonical_bytes(),
+        )
+        self.assertEqual(result.status, "DENIED")
+        self.assertEqual(executor.calls, 0)
 
     def test_runs_five_samples_and_writes_private_hashed_evidence(self):
         executor = FakeExecutor([self._receipt() for _ in range(5)])
@@ -188,8 +272,25 @@ class TestSyntheticExperimentRunner(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o700)
         campaign = json.loads((evidence / "campaign.json").read_text())
         self.assertEqual(campaign["status"], "COMPLETED")
+        self.assertEqual(
+            campaign["authorization"]["proposal_sha256"],
+            SyntheticExperimentProposal(
+                schema_version=1,
+                proposal_id="test-fixed-proposal",
+                rationale="Authorize the fixed repeatability plan in a PTY test.",
+                plan=self.plan,
+            ).sha256,
+        )
         self.assertFalse(campaign["performance_claim"])
         manifest = (evidence / "SHA256SUMS.txt").read_text().splitlines()
+        self.assertEqual(
+            hashlib.sha256((evidence / "plan.json").read_bytes()).hexdigest(),
+            result.plan_sha256,
+        )
+        self.assertEqual(
+            hashlib.sha256((evidence / "proposal.json").read_bytes()).hexdigest(),
+            campaign["authorization"]["proposal_sha256"],
+        )
         self.assertIn(
             f"{hashlib.sha256((evidence / 'plan.json').read_bytes()).hexdigest()}  plan.json",
             manifest,

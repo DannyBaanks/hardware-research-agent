@@ -55,6 +55,43 @@ parent termination; such an interruption may leave a campaign marked
 
 No campaign searched for performance improvements or changed CPU/GPU
 settings, firmware, drivers, power profiles, or other hardware state. The
-plan digest is an explicit local start action, not authenticated human
-identity. Autonomous planning, general authorization, hardware autonomy,
-and durable recovery remain outside this result.
+original campaign above predates the TTY-consent change and used the earlier
+explicit-digest CLI as its local start action. It therefore demonstrates
+workload repeatability, not the current consent mechanism. The TTY ceremony
+is also not authenticated human identity and does not protect against
+malicious processes sharing the operator's UID. Autonomous scientific
+planning, general authorization, hardware autonomy, and durable recovery
+remain outside this result.
+
+## Proposal and TTY authorization checks
+
+The current CLI accepts a versioned JSON proposal only as inert data. It
+rejects unknown keys, duplicate JSON keys, modified workloads or limits,
+non-regular files, symlinks at the proposal file, and oversized inputs.
+Review emits no authorization and does not invoke the executor. The runner
+requires an in-memory one-use grant and re-parses the canonical proposal,
+checks that it contains the exact fixed plan, consumes both digests, and
+stores `proposal.json` and `plan.json` byte-for-byte in the campaign evidence.
+
+- Full IHRA suite: 78 tests passed after the final hardening changes.
+- Piped-stdin check: `run-synthetic-experiment --proposal ...` returned
+  `DENY: No controlling TTY is available` even when stdin contained the exact
+  `AUTHORIZE <plan-sha256>` phrase; the campaign executor was not invoked.
+- Current CLI-to-Bubblewrap campaign: `9cb0377f48a440e3a516e2f6447488ed`,
+  `COMPLETED` / `DEMONSTRATED`, 5/5 samples. The command ran under a real
+  Linux PTY and Bubblewrap, but an automated PTY test driver supplied the
+  confirmation string. This is **not evidence that a human typed or approved
+  it**, nor proof of authenticated identity.
+- Proposal SHA-256:
+  `7f9d95db51f0847ebbaac59f5d9b9cc6091020cff42c40011627140d53b8a263`.
+- Plan SHA-256:
+  `135907eb2bf31e57a60ffe0a414a6fcb7b0a8cd55c744ae9984e683e61efa010`.
+- Evidence directory:
+  `~/.local/state/ihra/synthetic-experiments/9cb0377f48a440e3a516e2f6447488ed/`.
+  All 13 manifest entries verified; SHA-256 of `SHA256SUMS.txt`:
+  `2c6d572ea7ecd1b930dcf88ee8b7c9b5b5ec9b2fde87ffd90b56ad25f2e03c1b`.
+
+The grant prevents accidental API bypass and reuse within this process;
+Python objects and module internals are not a security boundary against
+arbitrary code running as the same user. The controlling TTY ceremony
+expresses local operator consent only.

@@ -19,7 +19,7 @@
 | [Rollback controller](core/rollback.py) | Restricts execution to a power-profile restore/query pair without a shell | **Separate helper**, not wired to an experiment runner; does not establish an end-to-end rollback guarantee |
 | [Dry-run executor](core/executor.py) | Replays two bundled synthetic evidence fixtures through the verifier | **No workload execution, hardware access, or system mutation** |
 | [Synthetic workload executor](core/executor.py) | Runs only the pinned `sha256-chain-v1` CPU workload in a rootless Bubblewrap sandbox with read-only host mounts and isolated temporary filesystems | Not a benchmark or experiment executor; no caller-provided commands, hardware telemetry/control, or persistent host writes |
-| [Synthetic experiment runner](core/experiment.py) | Executes an explicitly digest-authorized, immutable plan of five sequential workload samples and verifies each receipt | Sequence and contract analysis only; no planning authority, hardware authority, arbitrary plans, or changes outside its private evidence directory |
+| [Synthetic experiment runner](core/experiment.py) | Executes the fixed five-sample plan only after a one-use local TTY confirmation bound to the proposal and plan digests | TTY consent is not authenticated identity and does not protect against malicious same-UID processes; no general planning or hardware authority |
 | [Ada adapter](adapters/ada_adapter.py) | Detects selected NVIDIA PCI IDs, reads the driver's power-management parameter and optional `nvidia-smi` telemetry | A driver setting is **not proof** that the hardware unlock is active or safe |
 | [REA adapter](adapters/rea_adapter.py) | Locates a local REA runner or a Node/npx route and can invoke a requested analysis tool | This **executes external tooling**; it is not a sandbox and may invoke npm tooling |
 | Node wrapper | [bin/ihra.mjs](bin/ihra.mjs) dispatches to the Python CLI | Node is a convenience wrapper; Python does the work |
@@ -47,11 +47,13 @@ python3 -m core.cli dry-run ada_d3cold_false_positive
 # Run the one fixed CPU workload in a rootless sandbox
 python3 -m core.cli run-synthetic sha256-chain-v1
 
-# Review the fixed five-sample plan and its SHA-256 authorization digest
+# Inspect the fixed plan and export its strict, non-executable proposal
 python3 -m core.cli show-synthetic-plan
+python3 -m core.cli show-synthetic-proposal > /tmp/ihra-proposal.json
+python3 -m core.cli review-synthetic-proposal /tmp/ihra-proposal.json
 
-# After reviewing the displayed plan, replace PLAN_SHA256 with its exact digest
-python3 -m core.cli run-synthetic-experiment --authorize-plan-sha256 PLAN_SHA256
+# Review the exact proposal again and authorize interactively in the controlling TTY
+python3 -m core.cli run-synthetic-experiment --proposal /tmp/ihra-proposal.json
 
 # Equivalent Node wrapper (requires Node.js)
 node bin/ihra.mjs discover
@@ -70,11 +72,12 @@ node bin/ihra.mjs discover
 | `python3 -m core.cli sentinel 'powerprofilesctl get'` | Checks an exact read-only command against the allowlist | Classification only; no command is executed. All state-changing and unlisted commands are denied |
 | `python3 -m core.cli dry-run <fixture>` | Replays one of two checked-in synthetic evidence fixtures through the verifier | Uses fixture data only; performs zero workload commands, hardware reads, writes, or rollback actions |
 | `python3 -m core.cli run-synthetic sha256-chain-v1` | Runs a fixed 20,000-step SHA-256 chain in a rootless Bubblewrap sandbox | Requires trusted Bubblewrap and system Python; does not accept commands or scripts, access hardware telemetry/control, or persist host state |
-| `python3 -m core.cli show-synthetic-plan` | Displays the only authorized repeatability plan and its canonical digest | Review all fixed steps and resource limits before authorizing |
-| `python3 -m core.cli run-synthetic-experiment --authorize-plan-sha256 <digest>` | Runs five sequential samples with a maximum 8 seconds per sample and 60 seconds per campaign | The digest flag is an explicit local operator start, not cryptographic user authentication; plans/steps cannot be supplied or expanded |
+| `python3 -m core.cli show-synthetic-proposal` | Emits the strict JSON proposal for the only eligible synthetic plan | Proposal output is inert data and grants no execution authority |
+| `python3 -m core.cli review-synthetic-proposal <file>` | Validates and displays a proposal without executing or authorizing it | Unknown fields, commands, workloads, and changed limits are rejected |
+| `python3 -m core.cli run-synthetic-experiment --proposal <file>` | Displays the exact proposal, requires typing `AUTHORIZE <plan-sha256>` in the controlling TTY, then runs five sequential samples | No TTY, EOF, cancellation, or digest mismatch denies execution; TTY confirmation is not cryptographic identity and does not protect against same-UID processes |
 | `python3 -m core.cli inspect /path/to/file --tool inspect_malbolge` | Delegates analysis to REA | May start a local Node tool or `npx`; inspect dependencies before running |
 
-The Sentinel no longer accepts `--human-approved` or a caller-provided tier as authority. A read-only allowlist verdict still **does not grant permission to execute a command**. The fixed campaign only authorizes the reviewed synthetic plan; it is not connected to Sentinel, hardware adapters, experiment plans, or rollback. Evidence is written atomically under `$XDG_STATE_HOME/ihra/synthetic-experiments/` (or `~/.local/state/ihra/synthetic-experiments/`) with private permissions; a failure stops the sequence and preserves completed receipts. The digest confirms the plan bytes, but does not authenticate the human identity.
+The Sentinel no longer accepts `--human-approved` or a caller-provided tier as authority. A read-only allowlist verdict still **does not grant permission to execute a command**. Proposal review is read-only and proposals cannot supply executable commands or alter the fixed plan. Campaign authorization requires a fresh local TTY confirmation bound to both canonical proposal and plan digests; it is one-use and process-local. This ceremony expresses operator consent but does not authenticate identity or protect against malicious processes running as the same user. The fixed campaign is not connected to Sentinel, hardware adapters, arbitrary experiment plans, or rollback. Evidence is written atomically under `$XDG_STATE_HOME/ihra/synthetic-experiments/` (or `~/.local/state/ihra/synthetic-experiments/`) with private permissions; a failure stops the sequence and preserves completed receipts.
 
 ## Protocol and evidence
 
@@ -93,7 +96,7 @@ Before making a performance claim, the methodology calls for a comparable baseli
 - Hash comparison detects divergence in the **supplied** digests; it does not recalculate them from raw output artifacts.
 - The special D3cold rule rejects a software-unlocked claim when measured throughput stays near stock; the verifier does **not itself read BAR0** or prove the cause of the mismatch.
 - The Sentinel now derives the tier and allows only exact, no-argument read-only commands; all other commands, including arbitrary benchmarks, are denied. This is a conservative classifier, not an OS-enforced sandbox.
-- Tier 1/2 changes remain disabled because IHRA has no authenticated human-approval mechanism or experiment executor coupled to mandatory restoration. The separate rollback helper supports only a constrained power-profile restore/query pair.
+- Tier 1/2 changes remain disabled: the TTY ceremony authorizes only the fixed synthetic CPU campaign and is not authenticated identity or an experiment executor coupled to mandatory restoration. The separate rollback helper supports only a constrained power-profile restore/query pair.
 
 See [Safety contracts](docs/SAFETY_CONTRACTS.md), [12 proposed adversarial scenarios](docs/ANTIFAKE_TEST_MATRIX.md), and the [implementation plan](docs/IMPLEMENTATION_PLAN.md) for the stronger design intended by the project.
 

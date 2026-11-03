@@ -9,15 +9,18 @@ zero-bloat CLI interface for agents without heavy MCP or TUI overhead.
 import argparse
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
 from .discovery import HardwareDiscovery
+from .authorization import AuthorizationDenied, authorize_plan_from_tty
 from .sentinel import SentinelGate, SentinelVerdict
 from .verifier import AntiFakeVerifier, VerificationVerdict
 from .rollback import RollbackController
 from .executor import DryRunExecutor, SyntheticWorkloadExecutor
 from .experiment import SyntheticExperimentPlan, SyntheticExperimentRunner
+from .planning import ProposalValidationError, SyntheticExperimentProposal
 from adapters.adapters import (
     LinuxInventoryAdapter,
     LinuxCpuPerfAdapter,
@@ -134,20 +137,92 @@ def cmd_run_synthetic(args):
 
 def cmd_show_synthetic_plan(args):
     plan = SyntheticExperimentPlan.fixed_repeatability_plan()
+    proposal = _fixed_synthetic_proposal(plan)
     print(json.dumps({
         "plan": plan.to_dict(),
         "plan_sha256": plan.sha256,
-        "authorization_command": (
-            "python3 -m core.cli run-synthetic-experiment "
-            f"--authorize-plan-sha256 {plan.sha256}"
-        ),
+        "proposal": proposal.to_dict(),
+        "proposal_sha256": proposal.sha256,
+        "authorization": "Run with --proposal FILE in a local interactive terminal",
+    }, indent=2))
+
+
+def _fixed_synthetic_proposal(plan=None):
+    return SyntheticExperimentProposal(
+        schema_version=1,
+        proposal_id="ihra-fixed-synthetic-repeatability",
+        rationale="Verify five identical results from the reviewed fixed workload.",
+        plan=plan or SyntheticExperimentPlan.fixed_repeatability_plan(),
+    )
+
+
+def cmd_show_synthetic_proposal(args):
+    proposal = _fixed_synthetic_proposal()
+    print(json.dumps(proposal.to_dict(), indent=2))
+
+
+def _load_synthetic_proposal(path: str) -> SyntheticExperimentProposal:
+    fd = os.open(
+        path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    )
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ProposalValidationError("Proposal must be a regular file")
+        if metadata.st_size > SyntheticExperimentProposal.MAX_PROPOSAL_BYTES:
+            raise ProposalValidationError("Proposal exceeds the size limit")
+        chunks = []
+        remaining = SyntheticExperimentProposal.MAX_PROPOSAL_BYTES + 1
+        while remaining:
+            chunk = os.read(fd, min(4096, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
+    return SyntheticExperimentProposal.from_bytes(data)
+
+
+def cmd_review_synthetic_proposal(args):
+    try:
+        proposal = _load_synthetic_proposal(args.proposal)
+    except (OSError, ProposalValidationError) as exc:
+        print(json.dumps({"status": "DENIED", "verdict": "DENY", "reason": str(exc)}))
+        sys.exit(2)
+    print(json.dumps({
+        "status": "REVIEWED",
+        "eligible": True,
+        "proposal": proposal.to_dict(),
+        "proposal_sha256": proposal.sha256,
+        "plan_sha256": proposal.plan.sha256,
+        "execution_authority": "none; review does not authorize or execute",
     }, indent=2))
 
 
 def cmd_run_synthetic_experiment(args):
+    try:
+        proposal = _load_synthetic_proposal(args.proposal)
+        authorization = authorize_plan_from_tty(
+            proposal.plan.sha256,
+            proposal.sha256,
+            proposal.canonical_bytes().decode("ascii"),
+        )
+    except (OSError, ProposalValidationError, AuthorizationDenied) as exc:
+        print(json.dumps({"status": "DENIED", "verdict": "DENY", "reason": str(exc)}))
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print(json.dumps({
+            "status": "DENIED",
+            "verdict": "DENY",
+            "reason": "TTY authorization cancelled",
+        }))
+        sys.exit(130)
     result = SyntheticExperimentRunner().run(
-        SyntheticExperimentPlan.fixed_repeatability_plan(),
-        authorized_plan_sha256=args.authorize_plan_sha256,
+        proposal.plan,
+        authorization=authorization,
+        proposal_bytes=proposal.canonical_bytes(),
     )
     print(json.dumps(result.to_dict(), indent=2))
     if result.verdict != "DEMONSTRATED":
@@ -238,18 +313,31 @@ def main():
 
     p_plan = subparsers.add_parser(
         "show-synthetic-plan",
-        help="Display the fixed five-sample repeatability plan and its approval digest",
+        help="Display the only eligible five-sample plan and a proposal example",
     )
     p_plan.set_defaults(func=cmd_show_synthetic_plan)
 
+    p_proposal = subparsers.add_parser(
+        "show-synthetic-proposal",
+        help="Emit the strict JSON proposal for the only eligible synthetic plan",
+    )
+    p_proposal.set_defaults(func=cmd_show_synthetic_proposal)
+
+    p_review = subparsers.add_parser(
+        "review-synthetic-proposal",
+        help="Validate a proposal as inert data; this does not authorize or execute it",
+    )
+    p_review.add_argument("proposal", help="Path to a strict JSON proposal file")
+    p_review.set_defaults(func=cmd_review_synthetic_proposal)
+
     p_campaign = subparsers.add_parser(
         "run-synthetic-experiment",
-        help="Run the authorized fixed five-sample campaign in the rootless sandbox",
+        help="Review and locally authorize a proposal before its fixed sandbox campaign",
     )
     p_campaign.add_argument(
-        "--authorize-plan-sha256",
+        "--proposal",
         required=True,
-        help="Explicitly authorize this exact fixed campaign plan digest",
+        help="Path to a strict JSON proposal file; a controlling TTY is mandatory",
     )
     p_campaign.set_defaults(func=cmd_run_synthetic_experiment)
 

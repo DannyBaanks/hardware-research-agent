@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from .authorization import AuthorizationDenied, PlanAuthorization
 from .executor import (
     SandboxUnavailableError,
     SyntheticWorkloadExecutor,
@@ -262,7 +263,7 @@ class _CampaignEvidence:
 
 
 class SyntheticExperimentRunner:
-    """Runs the single pre-authorized five-sample repeatability campaign."""
+    """Runs the single TTY-authorized five-sample repeatability campaign."""
 
     def __init__(
         self,
@@ -375,24 +376,44 @@ class SyntheticExperimentRunner:
     def run(
         self,
         plan: SyntheticExperimentPlan,
-        authorized_plan_sha256: str,
+        authorization: Optional[PlanAuthorization] = None,
+        proposal_bytes: Optional[bytes] = None,
     ) -> ExperimentCampaignResult:
         try:
+            from .planning import SyntheticExperimentProposal
+
+            if not isinstance(plan, SyntheticExperimentPlan):
+                raise PlanValidationError("A fixed synthetic experiment plan is required")
             plan.validate()
             canonical_plan = plan.canonical_bytes()
             plan_digest = hashlib.sha256(canonical_plan).hexdigest()
-            if not isinstance(authorized_plan_sha256, str) or not re.fullmatch(
-                r"[0-9a-f]{64}", authorized_plan_sha256
+            if type(authorization) is not PlanAuthorization:
+                raise AuthorizationDenied("A one-time local TTY authorization is required")
+            if not isinstance(proposal_bytes, bytes):
+                raise AuthorizationDenied("Canonical proposal bytes are required")
+            proposal = SyntheticExperimentProposal.from_bytes(proposal_bytes)
+            if (
+                proposal.plan.canonical_bytes() != canonical_plan
+                or proposal.canonical_bytes() != proposal_bytes
             ):
-                raise PlanValidationError("An explicit plan digest authorization is required")
-            if authorized_plan_sha256 != plan_digest:
-                raise PlanValidationError("Authorization does not match the canonical plan digest")
+                raise AuthorizationDenied(
+                    "Proposal bytes are non-canonical or do not contain the authorized plan"
+                )
+            proposal_digest = authorization.consume(plan_digest, proposal.sha256)
             runner_digest = self._verify_runner(plan)
+        except ValueError as exc:
+            verdict = "DENY"
+            reason = str(exc)
+            if "RUNNER_INTEGRITY_FAILURE" in reason:
+                reason = "RUNNER_INTEGRITY_FAILURE"
+            return ExperimentCampaignResult(None, None, "DENIED", verdict, 0, None, reason)
+        except AuthorizationDenied as exc:
+            return ExperimentCampaignResult(None, None, "DENIED", "DENY", 0, None, str(exc))
         except SandboxUnavailableError as exc:
             return ExperimentCampaignResult(
                 None, None, "DENIED", "DENY", 0, None, f"SANDBOX_UNAVAILABLE: {exc}"
             )
-        except (PlanValidationError, ValueError, OSError, PermissionError) as exc:
+        except OSError as exc:
             verdict = "DENY"
             reason = str(exc)
             if "RUNNER_INTEGRITY_FAILURE" in reason:
@@ -410,13 +431,15 @@ class SyntheticExperimentRunner:
         try:
             evidence_base = self.evidence_base or _CampaignEvidence.default_base()
             store = _CampaignEvidence(evidence_base, campaign_id, self.repository_root)
-            store.write_bytes("plan.json", canonical_plan + b"\n")
+            store.write_bytes("plan.json", canonical_plan)
+            store.write_bytes("proposal.json", proposal_bytes)
             campaign_record = {
                 "campaign_id": campaign_id,
                 "plan_sha256": plan_digest,
                 "authorization": {
-                    "method": "explicit_operator_plan_digest",
-                    "authorized_plan_sha256": plan_digest,
+                    "method": "local_tty_confirmation",
+                    "plan_sha256": plan_digest,
+                    "proposal_sha256": proposal_digest,
                 },
                 "status": "RUNNING",
                 "verdict": "NOT_DEMONSTRATED",
