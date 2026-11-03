@@ -79,10 +79,46 @@ Any malformed, contradictory, unreadable, or unverifiable evidence is
 state or a missing manifest is not success. Age, timestamps, or a missing PID
 must not be used to infer that a campaign is abandoned or that its owner died.
 Inspection must not modify campaign files, finalize a `RUNNING` campaign, or
-resume/retry work. The writer now emits atomic campaign checkpoints and
-incrementally refreshed manifests; implementation of the read-only inspector
-and abrupt process-kill testing are pending later milestones. Unit tests do
-not demonstrate abrupt process-kill behavior.
+resume/retry work. The writer emits atomic campaign checkpoints and
+incrementally refreshed manifests; the read-only inspector is implemented,
+but abrupt process-kill testing is pending. Unit tests do not demonstrate
+abrupt process-kill behavior.
+
+`python3 -m core.cli inspect-synthetic-campaign <campaign-id>` validates the
+directory without starting an executor or process. It rejects symlinked paths
+and files, non-private or non-regular artifacts, malformed/duplicate manifest
+entries, missing files, digest mismatches, and inconsistent plan/proposal/
+checkpoint/sample links. `ACTIVE_OR_UNKNOWN` is not a claim that a process is
+alive; it means the persisted record has not established a terminal outcome.
+Historical campaigns without a checkpoint or current proposal binding can be
+read and their included receipts checked, but remain
+`INCOMPLETE` / `NOT_DEMONSTRATED` under the current contract. The inspector
+does not rewrite or migrate those records.
+
+### M2 read-only inspector verification
+
+The M2 implementation adds the `inspect-synthetic-campaign` CLI and a reader
+that opens evidence through directory file descriptors without following
+symlinks. It validates the fixed plan, proposal/authorization linkage,
+terminal checkpoint, ordered start markers and receipts, and exact manifest
+coverage. A matching manifest alone is insufficient: a receipt with an
+incorrect result digest remains incomplete even after its manifest hash is
+updated. Invalid campaign IDs, symlinked path components, duplicate manifest
+entries, missing files, unrepresentable durations, and excessively nested JSON
+fail closed. The command does not instantiate the campaign runner or launch a
+process.
+
+Verification on 2026-11-03: `python3 -m unittest tests.test_campaign_recovery
+-v` passed 17 tests; `python3 -m unittest discover -s tests -q` passed 98
+tests; `python3 -m compileall -q core tests` and `git diff --check` passed.
+The focused recovery suite uses temporary fixtures; it does not exercise a
+real abrupt process kill. Eight pre-existing campaign directories were also
+read without modification. Their hashes/receipts remained inspectable, but
+they were conservatively classified `NOT_DEMONSTRATED` because the historical
+artifacts do not satisfy the current proposal/checkpoint linkage (and one
+records a runner outside the current pin). No historical evidence was
+rewritten. M3 will add simulated cuts between persistence transitions; M4
+remains responsible for a real isolated process-interruption test.
 
 ## Proposal and TTY authorization checks
 

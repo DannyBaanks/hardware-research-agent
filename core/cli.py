@@ -21,6 +21,7 @@ from .rollback import RollbackController
 from .executor import DryRunExecutor, SyntheticWorkloadExecutor
 from .experiment import SyntheticExperimentPlan, SyntheticExperimentRunner
 from .planning import ProposalValidationError, SyntheticExperimentProposal
+from .recovery import inspect_synthetic_campaign
 from adapters.adapters import (
     LinuxInventoryAdapter,
     LinuxCpuPerfAdapter,
@@ -229,6 +230,13 @@ def cmd_run_synthetic_experiment(args):
         sys.exit(1)
 
 
+def cmd_inspect_synthetic_campaign(args):
+    result = inspect_synthetic_campaign(args.campaign_id)
+    print(json.dumps(result.to_dict(), indent=2))
+    if result.inspection_status != "COMPLETED_VALID":
+        sys.exit(1)
+
+
 def cmd_setup(args):
     """Checks and reports repository and toolchain status for agents."""
     base_dir = Path.home() / "Development"
@@ -340,6 +348,16 @@ def main():
         help="Path to a strict JSON proposal file; a controlling TTY is mandatory",
     )
     p_campaign.set_defaults(func=cmd_run_synthetic_experiment)
+
+    p_inspect_campaign = subparsers.add_parser(
+        "inspect-synthetic-campaign",
+        help="Inspect campaign evidence read-only without resuming or executing it",
+    )
+    p_inspect_campaign.add_argument(
+        "campaign_id",
+        help="Campaign UUID from the evidence directory; arbitrary paths are rejected",
+    )
+    p_inspect_campaign.set_defaults(func=cmd_inspect_synthetic_campaign)
 
     # setup
     p_setup = subparsers.add_parser("setup", help="Verify stack paths and dependencies")

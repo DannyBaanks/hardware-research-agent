@@ -90,6 +90,8 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 - **Aceptación:** Las pruebas muestran cero cambios byte por byte y cero llamadas a executor para campañas completas, incompletas, symlinked, corruptas y con artefactos faltantes.
 - **Prueba:** `python3 -m unittest tests.test_campaign_recovery -v`
 - **Rollback:** Retirar solo el comando y lector nuevo; las campañas y el flujo normal de ejecución siguen intactos.
+- **Estado ejecutado:** Implementados `core/recovery.py` y `inspect-synthetic-campaign`. El lector valida el identificador de campaña, rutas sin symlinks, permisos y tipos de archivos, manifiesto exacto, plan fijo, propuesta/autorización, checkpoint terminal, marcadores de inicio y cinco recibos. Devuelve `ACTIVE_OR_UNKNOWN` para `RUNNING`, y `INCOMPLETE/NOT_DEMONSTRATED` ante faltantes, contradicciones o evidencia histórica sin los nuevos enlaces. No inicia procesos, no construye el runner y no repara evidencia.
+- **Verificación M2:** `python3 -m unittest tests.test_campaign_recovery -v` → 17 tests OK; suite completa `python3 -m unittest discover -s tests -q` → 98 tests OK; `python3 -m compileall -q core tests` y `git diff --check` pasan. Ocho campañas preexistentes se leyeron sin modificación; sus recibos/hash siguen verificables cuando están presentes, pero ninguna se elevó a `COMPLETED_VALID` al faltar enlaces del contrato actual. Se probaron fixtures temporales, no interrupciones reales de procesos; `SIGKILL` sigue `NOT_DEMONSTRATED`.
 
 ### M3 — Añadir controles de cortes entre escrituras
 
@@ -163,5 +165,5 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 
 ## Próximo paso
 
-- **Primer paso:** Iniciar M2 diseñando el lector read-only para las campañas nuevas con checkpoint y las históricas sin checkpoint, sin ejecutar executor ni reparar evidencia.
-- **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && python3 -m unittest tests.test_synthetic_experiment -v`
+- **Primer paso:** Iniciar M3 inyectando fallos en cada frontera de persistencia y reconstruir el inspector únicamente desde la evidencia en disco, sin reanudar ni mutar la campaña.
+- **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && python3 -m unittest tests.test_campaign_recovery -v`
