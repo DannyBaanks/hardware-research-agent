@@ -115,12 +115,17 @@ class AntiFakeVerifier:
             )
 
         measurements = base_throughputs + inter_throughputs
-        if any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-            or value <= 0
-            for value in measurements
+        try:
+            normalized_measurements = [
+                float(value)
+                for value in measurements
+                if not isinstance(value, bool) and isinstance(value, (int, float))
+            ]
+        except (OverflowError, ValueError):
+            normalized_measurements = []
+        if (
+            len(normalized_measurements) != len(measurements)
+            or any(not math.isfinite(value) or value <= 0 for value in normalized_measurements)
         ):
             return VerificationResult(
                 verdict=VerificationVerdict.NOT_DEMONSTRATED,
@@ -130,18 +135,32 @@ class AntiFakeVerifier:
                 output_hash_invariant=True,
                 negative_control_invariant=False,
             )
-        
-        base_median = statistics.median(base_throughputs)
-        inter_median = statistics.median(inter_throughputs)
+
+        base_median = statistics.median(normalized_measurements[:len(base_throughputs)])
+        inter_median = statistics.median(normalized_measurements[len(base_throughputs):])
 
         speedup = inter_median / base_median if base_median > 0 else 1.0
+        if not math.isfinite(speedup):
+            return VerificationResult(
+                verdict=VerificationVerdict.NOT_DEMONSTRATED,
+                confidence=0.0,
+                reason="Throughput ratio is outside the finite numeric range",
+                median_speedup_factor=1.0,
+                output_hash_invariant=True,
+                negative_control_invariant=False,
+            )
 
         # 4. Check Negative Control Invariance
-        if (
-            isinstance(negative_control_delta, bool)
-            or not isinstance(negative_control_delta, (int, float))
-            or not math.isfinite(negative_control_delta)
-        ):
+        try:
+            normalized_control_delta = (
+                float(negative_control_delta)
+                if not isinstance(negative_control_delta, bool)
+                and isinstance(negative_control_delta, (int, float))
+                else None
+            )
+        except (OverflowError, ValueError):
+            normalized_control_delta = None
+        if normalized_control_delta is None or not math.isfinite(normalized_control_delta):
             return VerificationResult(
                 verdict=VerificationVerdict.NOT_DEMONSTRATED,
                 confidence=0.0,
@@ -151,11 +170,11 @@ class AntiFakeVerifier:
                 negative_control_invariant=False,
             )
 
-        if abs(negative_control_delta) > 0.03: # More than 3% drift on negative control
+        if abs(normalized_control_delta) > 0.03: # More than 3% drift on negative control
             return VerificationResult(
                 verdict=VerificationVerdict.NOT_DEMONSTRATED,
                 confidence=0.5,
-                reason=f"Confounding detected: negative control drifted by {negative_control_delta*100:.1f}% (limit: 3%)",
+                reason=f"Confounding detected: negative control drifted by {normalized_control_delta*100:.1f}% (limit: 3%)",
                 median_speedup_factor=speedup,
                 output_hash_invariant=True,
                 negative_control_invariant=False
@@ -181,7 +200,7 @@ class AntiFakeVerifier:
             return VerificationResult(
                 verdict=VerificationVerdict.DEMONSTRATED,
                 confidence=0.95,
-                reason=f"Statistically significant physical uplift of {(speedup-1)*100:.1f}% verified with mathematical parity",
+                reason=f"Median throughput uplift of {(speedup-1)*100:.1f}% observed with supplied mathematical parity evidence",
                 median_speedup_factor=speedup,
                 output_hash_invariant=True,
                 negative_control_invariant=True
@@ -191,7 +210,7 @@ class AntiFakeVerifier:
         return VerificationResult(
             verdict=VerificationVerdict.NOT_DEMONSTRATED,
             confidence=0.90,
-            reason=f"No significant performance delta observed (speedup: {speedup:.3f}x within noise threshold)",
+            reason=f"No uplift at or above the configured threshold observed (median speedup: {speedup:.3f}x)",
             median_speedup_factor=speedup,
             output_hash_invariant=True,
             negative_control_invariant=True

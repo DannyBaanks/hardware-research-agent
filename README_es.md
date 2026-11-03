@@ -17,11 +17,12 @@
 | [Sentinel](core/sentinel.py) | Deriva el riesgo del comando y solo acepta comandos de solo lectura exactos y permitidos | Deniega cambios de estado; no es sandbox, autenticación de aprobación ni ejecutor |
 | [Verificador antifake](core/verifier.py) | Exige un SHA-256 válido por corrida, throughput finito y un delta explícito de control negativo | Los datos los proporciona el llamante; compara hashes, pero no los recalcula desde resultados crudos ni mide hardware |
 | [Controlador de rollback](core/rollback.py) | Restringe la ejecución a restaurar y consultar perfiles de energía, sin shell | Es una **pieza independiente**, no está conectada a un ejecutor de experimentos y no demuestra rollback extremo a extremo |
+| [Ejecutor dry-run](core/executor.py) | Reproduce dos fixtures sintéticos de evidencia a través del verificador | **No ejecuta workloads ni comandos, no accede al hardware ni cambia el sistema**; no es un ejecutor autónomo |
 | [Adaptador Ada](adapters/ada_adapter.py) | Detecta ciertos PCI IDs NVIDIA y consulta el parámetro de energía y `nvidia-smi` | Un parámetro del driver **no demuestra** que el unlock esté activo ni que sea seguro |
 | [Adaptador REA](adapters/rea_adapter.py) | Localiza herramientas y puede invocar análisis mediante Node o npx | **Ejecuta herramientas externas**; no las aísla ni garantiza ausencia de descargas |
 | Wrapper de Node | [bin/ihra.mjs](bin/ihra.mjs) llama al CLI Python | Node solo ofrece otra entrada; el núcleo del CLI es Python |
 
-El [diseño arquitectónico](docs/ARCHITECTURE.md) también describe un ejecutor aislado, un historial de hipótesis y un grabador de evidencia. **No todos esos módulos existen todavía en `core/`.** Los contratos y esquemas expresan objetivos de diseño; no ejecutan esas garantías por existir.
+La [especificación arquitectónica](docs/ARCHITECTURE.md) describe un futuro ejecutor autónomo, un historial de hipótesis y un grabador de evidencia; esos módulos de producción **no están implementados**. `DryRunExecutor` solo reproduce fixtures locales fijos y nunca ejecuta workloads. Los contratos y esquemas expresan objetivos de diseño; no ejecutan esas garantías por existir.
 
 ## Inicio rápido responsable (Linux)
 
@@ -38,6 +39,9 @@ python3 -m unittest discover -s tests -v
 # Consultar inventario y telemetría seleccionada
 python3 -m core.cli discover
 
+# Reproducir evidencia sintética (no ejecuta comandos ni workloads)
+python3 -m core.cli dry-run ada_d3cold_false_positive
+
 # Alternativa usando Node.js
 node bin/ihra.mjs discover
 ```
@@ -53,9 +57,10 @@ node bin/ihra.mjs discover
 | `python3 -m core.cli setup` | Informa ubicaciones de proyectos relacionados | Comprueba **rutas de desarrollo fijadas en el código**; no constituye verificación universal de instalación |
 | `python3 -m core.cli ada` | Lee estado NVIDIA y su parámetro de gestión de energía | Informa `NOT_DEMONSTRATED`; el parámetro no prueba estado físico persistente ni seguridad del unlock |
 | `python3 -m core.cli sentinel 'powerprofilesctl get'` | Comprueba un comando exacto de solo lectura contra una lista permitida | Solo clasifica; no ejecuta. Deniega cambios de estado y comandos no incluidos |
+| `python3 -m core.cli dry-run <fixture>` | Reproduce uno de dos fixtures sintéticos incluidos usando el verificador | Solo usa datos fixture; no ejecuta workloads/comandos, no lee ni modifica hardware y no hace rollback |
 | `python3 -m core.cli inspect /ruta/al/archivo --tool inspect_malbolge` | Delega el análisis a REA | Puede ejecutar Node o `npx`; verifica dependencias antes de usarlo |
 
-Sentinel ya no acepta `--human-approved` ni un nivel de riesgo del llamante como autoridad. Un veredicto para una operación de solo lectura **tampoco autoriza su ejecución**: no hay un ejecutor seguro ni una aprobación autenticada para escrituras.
+Sentinel ya no acepta `--human-approved` ni un nivel de riesgo del llamante como autoridad. Un veredicto para una operación de solo lectura **tampoco autoriza su ejecución**: el replay dry-run no es un ejecutor de workloads y no hay aprobación autenticada para escrituras.
 
 ## Método científico y trazabilidad
 
@@ -97,7 +102,7 @@ Estos son **casos documentados que inspiraron IHRA**, no optimizaciones que el a
 python3 -m unittest discover -s tests -v
 ```
 
-El repositorio contiene **27 métodos `unittest` distribuidos en seis archivos**, contados directamente en el código versionado. Cubren adaptadores simulados, la lista permitida de Sentinel, rollback restringido, hashes obligatorios y falsos positivos sintéticos de `D3cold`. **No se afirma aquí una validación física extremo a extremo.** El árbol inspeccionado no contiene un workflow de GitHub Actions bajo `.github/workflows/`.
+El repositorio contiene **33 métodos `unittest` distribuidos en siete archivos**, contados directamente en el código versionado. Cubren adaptadores simulados, Sentinel, rollback restringido, límites del verificador y replay de fixtures sintéticos. El comando dry-run valida únicamente el replay; **no es un ejecutor autónomo ni opera hardware**. No se afirma una validación física extremo a extremo. El árbol inspeccionado no contiene un workflow de GitHub Actions bajo `.github/workflows/`.
 
 Ver [fixtures](fixtures/), [esquema de experimento](schemas/experiment.schema.json) y [esquema de evidencia](schemas/evidence.schema.json). Las simulaciones **no son logs crudos de una máquina real**.
 

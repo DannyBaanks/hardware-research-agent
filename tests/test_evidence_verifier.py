@@ -73,5 +73,34 @@ class TestEvidenceVerifier(unittest.TestCase):
         self.assertEqual(result.verdict, VerificationVerdict.NOT_DEMONSTRATED)
         self.assertIn("negative_control_delta", result.reason)
 
+    def test_unrepresentably_large_throughput_fails_closed(self):
+        baseline = [{"throughput": 10**10000, "output_sha256": self.hash_a} for _ in range(3)]
+        intervention = [{"throughput": 1.0, "output_sha256": self.hash_a} for _ in range(3)]
+
+        result = self.verifier.verify_experiment(
+            baseline, intervention, {}, negative_control_delta=0.0
+        )
+        self.assertEqual(result.verdict, VerificationVerdict.NOT_DEMONSTRATED)
+        self.assertIn("finite positive numbers", result.reason)
+
+    def test_unrepresentably_large_negative_control_fails_closed(self):
+        runs = [{"throughput": 100.0, "output_sha256": self.hash_a} for _ in range(3)]
+
+        result = self.verifier.verify_experiment(
+            runs, runs, {}, negative_control_delta=10**10000
+        )
+        self.assertEqual(result.verdict, VerificationVerdict.NOT_DEMONSTRATED)
+        self.assertIn("negative_control_delta", result.reason)
+
+    def test_nonfinite_throughput_ratio_fails_closed(self):
+        baseline = [{"throughput": 1e-300, "output_sha256": self.hash_a} for _ in range(3)]
+        intervention = [{"throughput": 1e300, "output_sha256": self.hash_a} for _ in range(3)]
+
+        result = self.verifier.verify_experiment(
+            baseline, intervention, {}, negative_control_delta=0.0
+        )
+        self.assertEqual(result.verdict, VerificationVerdict.NOT_DEMONSTRATED)
+        self.assertIn("outside the finite numeric range", result.reason)
+
 if __name__ == "__main__":
     unittest.main()

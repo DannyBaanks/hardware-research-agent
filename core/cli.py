@@ -16,6 +16,7 @@ from .discovery import HardwareDiscovery
 from .sentinel import SentinelGate, SentinelVerdict
 from .verifier import AntiFakeVerifier, VerificationVerdict
 from .rollback import RollbackController
+from .executor import DryRunExecutor
 from adapters.adapters import (
     LinuxInventoryAdapter,
     LinuxCpuPerfAdapter,
@@ -118,6 +119,11 @@ def cmd_sentinel(args):
         sys.exit(1)
 
 
+def cmd_dry_run(args):
+    receipt = DryRunExecutor().replay_fixture(args.fixture)
+    print(json.dumps(receipt.to_dict(), indent=2))
+
+
 def cmd_setup(args):
     """Checks and reports repository and toolchain status for agents."""
     base_dir = Path.home() / "Development"
@@ -175,6 +181,18 @@ def main():
     p_sent = subparsers.add_parser("sentinel", help="Evaluate an action against safety contracts")
     p_sent.add_argument("action", help="Exact read-only command to check; no command is executed")
     p_sent.set_defaults(func=cmd_sentinel)
+
+    # dry-run
+    p_dry = subparsers.add_parser(
+        "dry-run",
+        help="Replay bundled synthetic evidence without executing commands or accessing hardware",
+    )
+    p_dry.add_argument(
+        "fixture",
+        choices=sorted(DryRunExecutor.FIXTURES),
+        help="Bundled synthetic fixture to replay",
+    )
+    p_dry.set_defaults(func=cmd_dry_run)
 
     # setup
     p_setup = subparsers.add_parser("setup", help="Verify stack paths and dependencies")

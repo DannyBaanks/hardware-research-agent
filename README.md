@@ -17,11 +17,12 @@
 | [Sentinel](core/sentinel.py) | Derives risk from the command and accepts only exact, allowlisted read-only commands | Denies all state changes; not an execution sandbox, authenticated approval system, or executor |
 | [AntiFake verifier](core/verifier.py) | Requires a valid SHA-256 per run, finite throughput values, an explicit negative-control delta, and checks contradictory unlock claims | Evidence is caller-supplied; hashes are compared, not recomputed from raw outputs; no physical readback or formal significance test |
 | [Rollback controller](core/rollback.py) | Restricts execution to a power-profile restore/query pair without a shell | **Separate helper**, not wired to an experiment runner; does not establish an end-to-end rollback guarantee |
+| [Dry-run executor](core/executor.py) | Replays two bundled synthetic evidence fixtures through the verifier | **No workload execution, shell, hardware access, approval, or system mutation**; not an autonomous executor |
 | [Ada adapter](adapters/ada_adapter.py) | Detects selected NVIDIA PCI IDs, reads the driver's power-management parameter and optional `nvidia-smi` telemetry | A driver setting is **not proof** that the hardware unlock is active or safe |
 | [REA adapter](adapters/rea_adapter.py) | Locates a local REA runner or a Node/npx route and can invoke a requested analysis tool | This **executes external tooling**; it is not a sandbox and may invoke npm tooling |
 | Node wrapper | [bin/ihra.mjs](bin/ihra.mjs) dispatches to the Python CLI | Node is a convenience wrapper; Python does the work |
 
-Modules proposed in the [architecture specification](docs/ARCHITECTURE.md), including an independent executor, hypothesis ledger and evidence recorder, are **not all present in `core/`**. Protocol specifications and schemas document intended controls; their existence alone does not enforce them.
+The [architecture specification](docs/ARCHITECTURE.md) describes a future autonomous execution owner, hypothesis ledger and evidence recorder; those production modules are **not implemented**. `DryRunExecutor` only replays fixed local fixture data and never executes a workload. Protocol specifications and schemas document intended controls; their existence alone does not enforce them.
 
 ## Start safely (Linux)
 
@@ -38,6 +39,9 @@ python3 -m unittest discover -s tests -v
 # Discovery: inventory and optional read-only telemetry queries
 python3 -m core.cli discover
 
+# Replay synthetic evidence only (no command or workload is executed)
+python3 -m core.cli dry-run ada_d3cold_false_positive
+
 # Equivalent Node wrapper (requires Node.js)
 node bin/ihra.mjs discover
 ```
@@ -53,9 +57,10 @@ node bin/ihra.mjs discover
 | `python3 -m core.cli setup` | Reports companion repository locations | Currently checks **hard-coded developer-directory paths**; not a general installation checker |
 | `python3 -m core.cli ada` | Reads NVIDIA state and its driver power-management parameter | Reports `NOT_DEMONSTRATED`; a configured parameter is not proof of persistent hardware state or unlock safety |
 | `python3 -m core.cli sentinel 'powerprofilesctl get'` | Checks an exact read-only command against the allowlist | Classification only; no command is executed. All state-changing and unlisted commands are denied |
+| `python3 -m core.cli dry-run <fixture>` | Replays one of two checked-in synthetic evidence fixtures through the verifier | Uses fixture data only; performs zero workload commands, hardware reads, writes, or rollback actions |
 | `python3 -m core.cli inspect /path/to/file --tool inspect_malbolge` | Delegates analysis to REA | May start a local Node tool or `npx`; inspect dependencies before running |
 
-The Sentinel no longer accepts `--human-approved` or a caller-provided tier as authority. A read-only allowlist verdict still **does not grant permission to execute a command**; no safe experiment executor or authenticated write approval exists.
+The Sentinel no longer accepts `--human-approved` or a caller-provided tier as authority. A read-only allowlist verdict still **does not grant permission to execute a command**; the dry-run fixture replay is not a workload executor, and no authenticated write approval exists.
 
 ## Protocol and evidence
 
@@ -97,7 +102,7 @@ These are **source case studies**, not optimizations performed automatically by 
 python3 -m unittest discover -s tests -v
 ```
 
-The repository contains **27 `unittest` test methods** across six files (counted from the checked-in test sources). They exercise mocked adapters, Sentinel allowlist denials, constrained rollback behavior, required hashes and synthetic D3cold failures. **This README does not claim an independently observed CI run** or physical end-to-end hardware validation. There is currently no GitHub Actions workflow under `.github/workflows/` in the inspected tree.
+The repository contains **33 `unittest` test methods** across seven files (counted from the checked-in test sources). They exercise mocked adapters, Sentinel allowlist denials, constrained rollback behavior, verifier input bounds, required hashes and synthetic fixture replay. The dry-run command validates the replay pipeline only; it is **not an autonomous or hardware executor**. There is no physical end-to-end hardware validation or GitHub Actions workflow under `.github/workflows/` in the inspected tree.
 
 Consult [fixtures](fixtures/), [experiment schema](schemas/experiment.schema.json) and [evidence schema](schemas/evidence.schema.json) for the current test contracts. Synthetic fixtures are not raw hardware execution logs.
 
