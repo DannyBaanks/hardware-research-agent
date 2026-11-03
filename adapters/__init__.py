@@ -5,6 +5,8 @@ from .adapters import (
     NvidiaTelemetryAdapter,
     AmdXdnaDiscoveryAdapter
 )
+from .rea_adapter import ReaAdapter
+from .ada_adapter import AdaUnlockAdapter
 
 __all__ = [
     "HardwareAdapter",
@@ -14,4 +16,6 @@ __all__ = [
     "LinuxCpuPerfAdapter",
     "NvidiaTelemetryAdapter",
     "AmdXdnaDiscoveryAdapter",
+    "ReaAdapter",
+    "AdaUnlockAdapter",
 ]

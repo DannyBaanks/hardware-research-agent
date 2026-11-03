@@ -1,7 +1,7 @@
 # ISyCo Hardware Research Agent (IHRA)
 ## A Portable, Safety-Hardened Protocol for Reproducible Hardware Research on Linux
 
-[![Tests](https://img.shields.io/badge/tests-16%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-22%20passed-brightgreen.svg)]()
 [![License Proposal](https://img.shields.io/badge/license-Apache%202.0%20(proposed)-blue.svg)]()
 [![Status](https://img.shields.io/badge/status-PROPOSAL%20%2F%20HRA--00-yellow.svg)]()
 
@@ -28,6 +28,38 @@ IHRA extracts these lessons into an **open, decoupled, and portable agent protoc
   * **Executor (Engine):** Hardened whitelist runner with continuous thermal and memory monitoring.
 * **Mandatory Automated Rollback:** No state modification may occur without a verified rollback query that confirms post-test restoration.
 * **The Triangulation Mandate:** Software telemetry alone is rejected. Hardware readbacks, physical execution throughput, and mathematical output parity (SHA-256) must all agree.
+
+---
+
+## 2b. The Tri-Repo Ecosystem & Zero-Bloat Bridge
+
+Rather than forcing LLM agents to run heavy background MCP servers (which advertise 3.5 MB of schemas and consume hundreds of megabytes of RAM idle) or cumbersome terminal TUIs, the **IHRA Unified CLI Bridge** connects three specialized open-source tools via clean Unix JSON pipelines:
+
+| Repository | Role | Upstream / Origin | Key Capability |
+|---|---|---|---|
+| [DannyBaanks/rea](https://github.com/DannyBaanks/rea) | Binary & Firmware Forensics | Fork of `morluto/rea` (Tag 6.5.0) | Disassembly, bounded tracing, compact 7 KB profile (`REA_MCP_TOOL_PROFILE=compact`), and Malbolge reverse-engineering suite. |
+| [DannyBaanks/gpu-unlock-ada](https://github.com/DannyBaanks/gpu-unlock-ada) | GPU Capability Unlock & Canary | Fork of `JustAResearcher/gpu-unlock-ada` | PR #134 canary, 2.00x GEMM multiplier, and `DynamicPowerManagement=0x00` D3cold rail persistence. |
+| [DannyBaanks/hardware-research-agent](https://github.com/DannyBaanks/hardware-research-agent) | Research Protocol & Safety Sentinel | Canonical protocol repo | Decoupled Sentinel Gate, automated rollback, antifake delta verifier, and SHA-256 evidence bundles. |
+
+### Quickstart: Single-Command Agent Interface
+
+```bash
+# Direct Node/npm runner (or via npx)
+./bin/ihra.mjs discover
+
+# Check hardware state & companion repositories
+python3 -m core.cli setup
+
+# Run pre-flight safety check on a proposed experiment command
+python3 -m core.cli sentinel "wrmsr -a 0x199 0x2000"   # -> DENIED (Exit 1)
+python3 -m core.cli sentinel "python3 benchmark.py"     # -> AUTHORIZED (Exit 0)
+
+# Query Ada GPU telemetry and D3cold rail safety
+python3 -m core.cli ada
+
+# Run REA binary analysis without starting an MCP server
+python3 -m core.cli inspect /path/to/binary --tool inspect_malbolge
+```
 
 ---
 

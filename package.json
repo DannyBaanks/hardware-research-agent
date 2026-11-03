@@ -1,0 +1,39 @@
+{
+  "name": "hardware-research-agent",
+  "version": "1.0.0",
+  "description": "Hardware Research Agent (IHRA) - Unified, lean hardware forensics & optimization protocol connecting REA, GPU-Unlock-Ada, and HRA.",
+  "type": "module",
+  "main": "bin/ihra.mjs",
+  "bin": {
+    "ihra": "bin/ihra.mjs",
+    "isyco-hw": "bin/ihra.mjs"
+  },
+  "scripts": {
+    "start": "node bin/ihra.mjs",
+    "discover": "node bin/ihra.mjs discover",
+    "ada": "node bin/ihra.mjs ada",
+    "setup": "node bin/ihra.mjs setup",
+    "test": "python3 -m unittest discover -s tests"
+  },
+  "keywords": [
+    "hardware",
+    "research",
+    "forensics",
+    "sentinel",
+    "rea",
+    "ada-unlock",
+    "antifake",
+    "ai-agent",
+    "isyco"
+  ],
+  "author": "DannyBaanks <danielbaanksyy@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DannyBaanks/hardware-research-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DannyBaanks/hardware-research-agent/issues"
+  },
+  "homepage": "https://github.com/DannyBaanks/hardware-research-agent#readme"
+}
