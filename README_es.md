@@ -82,6 +82,8 @@ Sentinel ya no acepta `--human-approved` ni un nivel de riesgo del llamante como
 
 El inspector de campañas es de solo lectura y no infiere abandono por antigüedad o ausencia de PID. Devuelve `ACTIVE_OR_UNKNOWN` para una campaña persistida como `RUNNING`, `INCOMPLETE` / `NOT_DEMONSTRATED` si faltan evidencias o hay inconsistencias, y `COMPLETED_VALID` solo cuando coinciden propuesta, plan, checkpoint terminal, cinco recibos y manifiesto. La evidencia histórica sigue siendo legible, pero no se eleva a `COMPLETED_VALID` si carece de los enlaces actuales de propuesta/checkpoint.
 
+También se probaron en Linux dos interrupciones reales con `SIGKILL` al proceso padre: mientras el workload fijo estaba activo dentro de Bubblewrap y después de persistir un recibo, antes de la siguiente muestra. En ambos casos terminan los descendientes del sandbox identificados, se conserva la evidencia previa verificable y la inspección no declara éxito. Son corridas aisladas de harness con evidencia temporal; no producen un paquete independiente ni prueban autorización humana. `SIGTERM`, pérdida de energía, fallos de almacenamiento y recuperación/reanudación automática siguen sin probarse o no están disponibles.
+
 ## Método científico y trazabilidad
 
 El [pipeline de diez etapas](docs/COMMON_RESEARCH_PIPELINE.md) especifica el **proceso que se desea construir**, no un servicio autónomo ya terminado:
@@ -122,7 +124,7 @@ Estos son **casos documentados que inspiraron IHRA**, no optimizaciones que el a
 python3 -m unittest discover -s tests -v
 ```
 
-Las pruebas `unittest` cubren adaptadores simulados, denegaciones de Sentinel, rollback restringido, límites del verificador, hashes requeridos, replay de fixtures, el executor fijo, diez controles adversariales sintéticos de campaña, la inspección read-only y cortes simulados en fronteras de persistencia. El [informe de controles IHRA-01](docs/SYNTHETIC_EXPERIMENT_CONTROLS.md) separa las simulaciones de las comprobaciones reales de procesos en Linux y registra la evidencia verificada de campaña y timeout. La campaña de cinco muestras solo demuestra repetibilidad, no rendimiento ni optimización del hardware. Se implementaron checkpoints crash-consistent e inspección read-only, pero la recuperación real tras matar abruptamente el proceso, la reanudación, planificación autónoma, autorización general y cambios de hardware no están demostrados ni disponibles.
+Las pruebas `unittest` cubren adaptadores simulados, denegaciones de Sentinel, rollback restringido, límites del verificador, hashes requeridos, replay de fixtures, el executor fijo, diez controles adversariales sintéticos de campaña, inspección read-only, cortes simulados en fronteras de persistencia y dos interrupciones reales con `SIGKILL` al padre en Linux/Bubblewrap. El [informe de controles IHRA-01](docs/SYNTHETIC_EXPERIMENT_CONTROLS.md) separa simulaciones y procesos reales. La campaña de cinco muestras solo demuestra repetibilidad, no rendimiento ni optimización del hardware. Se demostraron checkpoints, inspección read-only y esos dos cortes específicos; la reanudación automática, pérdida de energía o fallos de almacenamiento, planificación autónoma, autorización general y cambios de hardware no están demostrados ni disponibles.
 
 Ver [fixtures](fixtures/), [esquema de experimento](schemas/experiment.schema.json) y [esquema de evidencia](schemas/evidence.schema.json). Las simulaciones **no son logs crudos de una máquina real**.
 

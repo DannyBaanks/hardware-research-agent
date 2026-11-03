@@ -17,7 +17,9 @@ path, not proof against every live adversary.
 | NC-7 | Sample 3 reports a corrupt result digest. | Preserve samples 1-3 and never start samples 4-5. | Two samples completed; sample 3 failed; exactly three executor calls occurred. | `test_nc7_corrupt_sample_stops_remaining_campaign` — simulated receipts and fake executor. | `REFUTED` |
 | NC-8 | The evidence destination contains a symlink to an outside directory. | Reject before executing a workload. | Campaign returned `ABORTED` / `NOT_DEMONSTRATED`; zero executor calls occurred and the symlink target remained empty. | `test_nc8_symlink_evidence_root_is_rejected` — simulated filesystem layout in a temporary directory. No campaign receipt can be written to the rejected destination. | `NOT_DEMONSTRATED` |
 | NC-9 | `PATH` contains an impostor named `bwrap`. | Resolve only the fixed trusted absolute binary paths. | The resolver returned absolute system paths, not the impostor. | `test_nc9_path_impostor_does_not_change_trusted_binary_resolution` — direct resolver check on Linux; the impostor was not executed. | `DEMONSTRATED` |
-| NC-10 | The campaign receives an interruption during a sample. | Record a non-complete state and do not continue. | An interrupted marker was written; campaign status was not `COMPLETED`; one executor call occurred. | `test_nc10_keyboard_interrupt_is_recorded_as_noncomplete` — simulated `KeyboardInterrupt` with fake executor. The actual executor's process-group interruption handler is separately unit-tested with mocked process controls; abrupt parent termination was not exercised. | `REFUTED` |
+| NC-10 | The campaign receives a cooperative interruption during a sample. | Record a non-complete state and do not continue. | An interrupted marker was written; campaign status was not `COMPLETED`; one executor call occurred. | `test_nc10_keyboard_interrupt_is_recorded_as_noncomplete` — simulated `KeyboardInterrupt` with fake executor. The actual executor's process-group interruption handler is separately unit-tested with mocked process controls; abrupt parent termination is covered separately by the M4 controls below. | `REFUTED` |
+| M4-SIGKILL-1 | Kill the campaign parent while the fixed Python workload is active inside real Bubblewrap. | No sandbox descendant survives; prior receipts remain valid; the campaign is not successful. | The harness observed and stopped the exact `/app/workload_runner.py` process, then SIGKILLed its parent. All captured descendant PID/start-time identities became inactive; receipt 1 and the manifest remained valid, sample 2 stayed `SAMPLE_RUNNING`, and two read-only inspections returned `ACTIVE_OR_UNKNOWN` / `NOT_DEMONSTRATED` without changing evidence. | `test_sigkill_during_real_bubblewrap_sample_kills_child_and_keeps_campaign_incomplete` — real Linux process, fixed executor and Bubblewrap 0.9.0; automated PTY test authorization. | `DEMONSTRATED` |
+| M4-SIGKILL-2 | SIGKILL the campaign parent after sample 1's durable receipt and before dispatching sample 2. | Keep the prior receipt; do not mark the campaign complete or execute later samples. | Receipt 1 remained valid and manifest-covered; the sample 2 start marker/checkpoint remained `SAMPLE_RUNNING`; no sample 2 receipt existed; inspection returned `ACTIVE_OR_UNKNOWN` / `NOT_DEMONSTRATED` and left evidence unchanged. | `test_sigkill_after_durable_receipt_preserves_it_without_claiming_completion` — real campaign parent and executor setup; automated PTY test authorization. The harness stops before the second executor dispatch. | `DEMONSTRATED` |
 
 `REFUTED` in this table means the fixed repeatability claim is correctly
 rejected for the adversarial input; it does not mean the safety control failed.
@@ -48,10 +50,17 @@ Both campaigns use the same fixed plan and runner identity.
 The live campaign demonstrates sequence autonomy and contract analysis for
 this one synthetic CPU workload. The real timeout check exercises one
 Bubblewrap failure path. The other adversarial controls are unit-level or
-mocked parent-validation checks as identified above. In particular, NC-10
-does not demonstrate recovery after `SIGKILL`, power loss, or other abrupt
-parent termination; such an interruption may leave a campaign marked
-`RUNNING`, which must not be interpreted as complete.
+mocked parent-validation checks as identified above. M4 additionally exercised
+two real parent `SIGKILL` timings under Linux/Bubblewrap: while the fixed
+runner was active, and after one receipt was durable but before the next
+dispatch. The test identified processes by PID and `/proc` start time,
+observed no captured sandbox descendant remaining active, retained prior
+receipt evidence, and confirmed the interrupted campaigns stayed
+`ACTIVE_OR_UNKNOWN` / `NOT_DEMONSTRATED`. The tests use temporary evidence
+directories and an automated PTY harness; they do not prove a human
+authorization or preserve a standalone evidence bundle. `SIGTERM`, power
+loss, storage/controller failure, and recovery after those events remain
+`NOT_DEMONSTRATED`. No campaign is automatically resumed or retried.
 
 No campaign searched for performance improvements or changed CPU/GPU
 settings, firmware, drivers, power profiles, or other hardware state. The
@@ -80,9 +89,11 @@ state or a missing manifest is not success. Age, timestamps, or a missing PID
 must not be used to infer that a campaign is abandoned or that its owner died.
 Inspection must not modify campaign files, finalize a `RUNNING` campaign, or
 resume/retry work. The writer emits atomic campaign checkpoints and
-incrementally refreshed manifests; the read-only inspector is implemented,
-but abrupt process-kill testing is pending. Unit tests do not demonstrate
-abrupt process-kill behavior.
+incrementally refreshed manifests; the read-only inspector is implemented.
+The M4 tests demonstrate only the two parent-`SIGKILL` timings described
+above on Linux 7.0.0-42-generic (`x86_64`), Python 3.12.3, and `/usr/bin/bwrap`
+0.9.0. They do not establish crash consistency under power loss, storage
+failure, or other operating systems.
 
 `python3 -m core.cli inspect-synthetic-campaign <campaign-id>` validates the
 directory without starting an executor or process. It rejects symlinked paths

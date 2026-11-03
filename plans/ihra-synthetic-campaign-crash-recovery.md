@@ -121,6 +121,8 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 - **Aceptación:** Ningún caso interrumpido aparece `COMPLETED/DEMONSTRATED`; ningún proceso sandbox hijo queda vivo; recibos previos siguen verificables; los recibos parciales no se promueven.
 - **Prueba:** `python3 -m unittest tests.test_campaign_recovery -v`
 - **Rollback:** Detener solo el proceso de prueba identificado; conservar evidencia adversarial. Si el control deja procesos vivos, bloquear el milestone y no añadir cleanup amplio ni comandos de proceso por nombre.
+- **Estado ejecutado:** Añadidos dos controles de proceso real con workload fijo y Bubblewrap rootless. El primero identifica por ejecutable y `/proc` el runner `python3.12 -I /app/workload_runner.py`, lo detiene para fijar la ventana adversarial y envía `SIGKILL` únicamente al padre del harness; el segundo mata el padre tras el primer recibo durable y antes del segundo dispatch. Los tests conservan PID y start-time de cada descendiente para comprobar que no queda activo, validan el manifiesto/recibo previo e inspeccionan la campaña sin mutar evidencia.
+- **Verificación M4:** Ambos tests reales pasaron en Linux `7.0.0-42-generic` (`x86_64`), Python `3.12.3`, `/usr/bin/bwrap` `0.9.0`; suite completa: 102 tests OK. Los artefactos se crearon en directorios temporales de tests, no se preservó un paquete crudo independiente. Solo se demuestra `SIGKILL` en esos dos puntos; `SIGTERM`, pérdida de energía y fallos de almacenamiento quedan `NOT_DEMONSTRATED`.
 
 ### M5 — Documentar límites y cerrar regresiones
 
@@ -134,6 +136,8 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 - **Aceptación:** Documentación y outputs nunca equiparan `RUNNING`, manifiesto ausente o recibos parciales a éxito; pruebas y verificación de artefactos pasan.
 - **Prueba:** `python3 -m unittest discover -s tests -v && python3 -m compileall -q core tests && git diff --check`
 - **Rollback:** Revertir solo los commits de este plan si la evidencia o las garantías fallan; preservar intactos todos los recibos y resultados históricos.
+- **Estado ejecutado:** README inglés/español, informe de controles, arquitectura y roadmap distinguen pruebas simuladas de los dos cortes Linux reales, explican `ACTIVE_OR_UNKNOWN` / `NOT_DEMONSTRATED` y niegan extrapolación a `SIGTERM`, pérdida de energía, almacenamiento o reanudación.
+- **Verificación M5:** Suite completa y validaciones estructurales finales registradas al cierre de este milestone; ninguna campaña histórica fue modificada. No se actualizó `core/cli.py`, pues el comando de inspección read-only ya estaba implementado en M2.
 
 ## Dependencias
 
@@ -167,5 +171,5 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 
 ## Próximo paso
 
-- **Primer paso:** Preparar M4 como una prueba Linux/Bubblewrap aislada, identificando solo los PID de harness y comprobando descendants, recibos y clasificación read-only tras la terminación controlada.
-- **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && python3 -m unittest tests.test_campaign_recovery -v`
+- **Primer paso:** Revisar el diff final, ejecutar suite/validaciones, registrar el commit local y liberar formalmente el lease de M4 sin hacer push.
+- **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && python3 -m unittest discover -s tests -v && python3 -m compileall -q core tests && git diff --check`

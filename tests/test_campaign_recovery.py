@@ -1,7 +1,11 @@
 import hashlib
 import json
 import os
+import signal
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -15,7 +19,11 @@ from core.experiment import (
     SyntheticExperimentPlan,
     SyntheticExperimentRunner,
 )
-from core.executor import SyntheticWorkloadExecutor, WorkloadReceipt
+from core.executor import (
+    SandboxUnavailableError,
+    SyntheticWorkloadExecutor,
+    WorkloadReceipt,
+)
 from core.planning import SyntheticExperimentProposal
 from core.recovery import inspect_synthetic_campaign
 from tests.tty_test_utils import authorize_in_pty
@@ -156,6 +164,443 @@ class TestCampaignRecoveryInspection(unittest.TestCase):
             lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")
         manifest_path.write_text("\n".join(lines) + "\n", encoding="ascii")
         manifest_path.chmod(0o600)
+
+    @staticmethod
+    def _read_proc_entry(pid):
+        try:
+            proc_path = Path("/proc") / str(pid)
+            data = (proc_path / "stat").read_text()
+            executable = os.readlink(proc_path / "exe")
+            command_line = (
+                proc_path / "cmdline"
+            ).read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            return None
+        fields = data.rsplit(")", 1)[1].split()
+        return {
+            "state": fields[0],
+            "parent_pid": int(fields[1]),
+            "start_time": fields[19],
+            "executable": executable,
+            "command_line": command_line,
+        }
+
+    @classmethod
+    def _proc_descendants(cls, root_pid):
+        entries = {}
+        for path in Path("/proc").iterdir():
+            if not path.name.isdigit():
+                continue
+            entry = cls._read_proc_entry(int(path.name))
+            if entry is not None:
+                entries[int(path.name)] = entry
+        descendants = {}
+        parents = {root_pid}
+        while parents:
+            children = {
+                pid: entry
+                for pid, entry in entries.items()
+                if entry["parent_pid"] in parents and pid not in descendants
+            }
+            descendants.update(children)
+            parents = set(children)
+        return descendants
+
+    @classmethod
+    def _matching_live_processes(cls, identities):
+        live = []
+        for pid, start_time in identities.items():
+            entry = cls._read_proc_entry(pid)
+            if (
+                entry is not None
+                and entry["start_time"] == start_time
+                and entry["state"] != "Z"
+            ):
+                live.append(pid)
+        return live
+
+    @classmethod
+    def _cleanup_harness(cls, process, identities):
+        if process.poll() is None:
+            try:
+                os.kill(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=5)
+        for pid in cls._matching_live_processes(identities):
+            entry = cls._read_proc_entry(pid)
+            if entry is not None and entry["start_time"] == identities[pid]:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def _start_sigkill_harness(self, phase):
+        plan = SyntheticExperimentPlan.fixed_repeatability_plan()
+        campaign_id = f"{100 + (phase == 'during-sample'):032x}"
+        evidence_base = (
+            self.root / f"m4-{phase}" / "state" / "ihra" / "synthetic-experiments"
+        )
+        ready_path = self.root / f"m4-{phase}.ready.json"
+        error_path = self.root / f"m4-{phase}.error.txt"
+        child_code = r'''
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from core.experiment import SyntheticExperimentPlan, SyntheticExperimentRunner
+from core.executor import SyntheticWorkloadExecutor
+from core.planning import SyntheticExperimentProposal
+from tests.tty_test_utils import authorize_in_pty
+
+evidence_base = Path(sys.argv[1])
+campaign_id = sys.argv[2]
+ready_path = Path(sys.argv[3])
+error_path = Path(sys.argv[4])
+phase = sys.argv[5]
+
+def publish_ready(
+    child_pid=None,
+    child_start_time=None,
+    child_running=None,
+    runner_pid=None,
+    runner_start_time=None,
+    process_identities=None,
+    error=None,
+):
+    value = {
+        "campaign_id": campaign_id,
+        "child_pid": child_pid,
+        "child_start_time": child_start_time,
+        "child_running": child_running,
+        "runner_pid": runner_pid,
+        "runner_start_time": runner_start_time,
+        "process_identities": process_identities or [],
+        "error": error,
+    }
+    temporary = ready_path.with_name(ready_path.name + ".tmp")
+    temporary.write_text(json.dumps(value), encoding="ascii")
+    os.replace(temporary, ready_path)
+
+try:
+    plan = SyntheticExperimentPlan.fixed_repeatability_plan()
+    proposal = SyntheticExperimentProposal(
+        schema_version=1,
+        proposal_id="test-m4-process-interruption",
+        rationale="Exercise controlled parent termination under the fixed sandbox contract.",
+        plan=plan,
+    )
+    authorization = authorize_in_pty(
+        plan.sha256,
+        proposal.sha256,
+        proposal.canonical_bytes().decode("ascii"),
+    )
+    run_count = [0]
+
+    if phase == "after-receipt":
+        original_run = SyntheticWorkloadExecutor.run
+        def pause_before_second_dispatch(self, workload_id):
+            run_count[0] += 1
+            if run_count[0] == 2:
+                publish_ready()
+                while True:
+                    time.sleep(1)
+            return original_run(self, workload_id)
+        SyntheticWorkloadExecutor.run = pause_before_second_dispatch
+    else:
+        original_popen = subprocess.Popen
+        bwrap_count = [0]
+        def capture_descendant_identities(root_pid):
+            entries = {}
+            for name in os.listdir("/proc"):
+                if not name.isdigit():
+                    continue
+                try:
+                    fields = (
+                        Path("/proc") / name / "stat"
+                    ).read_text().rsplit(")", 1)[1].split()
+                    entries[int(name)] = {
+                        "parent_pid": int(fields[1]),
+                        "start_time": fields[19],
+                    }
+                except OSError:
+                    continue
+            identities = {}
+            parents = {root_pid}
+            while parents:
+                children = {
+                    pid: entry
+                    for pid, entry in entries.items()
+                    if entry["parent_pid"] in parents and pid not in identities
+                }
+                identities.update(children)
+                parents = set(children)
+            return [
+                {"pid": pid, "start_time": entry["start_time"]}
+                for pid, entry in identities.items()
+            ]
+
+        def find_runner_and_kill_parent(process, parent_pid, bwrap_start_time):
+            deadline = time.monotonic() + 1
+            runner_identity = None
+            try:
+                while time.monotonic() < deadline and process.poll() is None:
+                    pending = [process.pid]
+                    visited = set()
+                    while pending:
+                        pid = pending.pop()
+                        if pid in visited:
+                            continue
+                        visited.add(pid)
+                        proc_path = Path("/proc") / str(pid)
+                        try:
+                            children = (proc_path / "task" / str(pid) / "children").read_text()
+                            pending.extend(int(child) for child in children.split())
+                            executable = os.readlink(proc_path / "exe")
+                            command_line = (proc_path / "cmdline").read_bytes()
+                        except OSError:
+                            continue
+                        if (
+                            Path(executable).name.startswith("python3")
+                            and b"/app/workload_runner.py" in command_line
+                        ):
+                            stat_fields = (
+                                proc_path / "stat"
+                            ).read_text().rsplit(")", 1)[1].split()
+                            runner_identity = (pid, stat_fields[19])
+                            os.kill(pid, signal.SIGSTOP)
+                            identities = capture_descendant_identities(parent_pid)
+                            publish_ready(
+                                process.pid,
+                                bwrap_start_time,
+                                process.poll() is None,
+                                runner_identity[0],
+                                runner_identity[1],
+                                identities,
+                            )
+                            os.kill(parent_pid, signal.SIGKILL)
+                            return
+                    time.sleep(0.001)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+            else:
+                error = "fixed workload process was not observed before its deadline"
+            publish_ready(
+                process.pid,
+                bwrap_start_time,
+                process.poll() is None,
+                runner_identity[0] if runner_identity else None,
+                runner_identity[1] if runner_identity else None,
+                capture_descendant_identities(parent_pid),
+                error,
+            )
+            os.kill(parent_pid, signal.SIGKILL)
+
+        def terminate_parent_after_second_sandbox_start(*args, **kwargs):
+            process = original_popen(*args, **kwargs)
+            command = args[0] if args else kwargs.get("args")
+            if command and command[0] == "/usr/bin/bwrap":
+                bwrap_count[0] += 1
+                if bwrap_count[0] == 2:
+                    stat_fields = (
+                        Path("/proc") / str(process.pid) / "stat"
+                    ).read_text().rsplit(")", 1)[1].split()
+                    watcher = threading.Thread(
+                        target=find_runner_and_kill_parent,
+                        args=(
+                            process,
+                            os.getpid(),
+                            stat_fields[19],
+                        ),
+                        daemon=True,
+                    )
+                    watcher.start()
+            return process
+        subprocess.Popen = terminate_parent_after_second_sandbox_start
+
+    from core import experiment
+    with patch.object(experiment.uuid, "uuid4", return_value=SimpleNamespace(hex=campaign_id)):
+        runner = SyntheticExperimentRunner(evidence_base=evidence_base)
+        result = runner.run(
+            plan,
+            authorization=authorization,
+            proposal_bytes=proposal.canonical_bytes(),
+        )
+        error_path.write_text(json.dumps(result.to_dict()), encoding="utf-8")
+except BaseException as exc:
+    error_path.write_text(f"{type(exc).__name__}: {exc}", encoding="utf-8")
+    raise
+'''
+        with error_path.open("wb") as error_output:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    child_code,
+                    str(evidence_base),
+                    campaign_id,
+                    str(ready_path),
+                    str(error_path),
+                    phase,
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=error_output,
+                close_fds=True,
+            )
+        deadline = time.monotonic() + 15
+        while not ready_path.exists() and time.monotonic() < deadline:
+            if process.poll() is not None:
+                detail = error_path.read_text() or "empty harness error output"
+                self.fail(f"M4 harness exited before its gate: {detail}")
+            time.sleep(0.01)
+        if not ready_path.exists():
+            process.kill()
+            process.wait(timeout=5)
+            detail = error_path.read_text() if error_path.exists() else "gate timed out"
+            self.fail(f"M4 harness did not reach its interruption gate: {detail}")
+        ready = json.loads(ready_path.read_text())
+        identities = {
+            pid: entry["start_time"]
+            for pid, entry in self._proc_descendants(process.pid).items()
+        }
+        if ready["child_pid"] is not None and ready["child_start_time"] is not None:
+            identities[ready["child_pid"]] = ready["child_start_time"]
+        if ready["runner_pid"] is not None and ready["runner_start_time"] is not None:
+            identities[ready["runner_pid"]] = ready["runner_start_time"]
+        identities.update({
+            item["pid"]: item["start_time"]
+            for item in ready["process_identities"]
+        })
+        self.addCleanup(self._cleanup_harness, process, identities)
+        return process, ready, evidence_base
+
+    def _terminate_harness_and_verify_children(self, process, child_identities):
+        try:
+            os.kill(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        self.assertEqual(process.wait(timeout=5), -signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while self._matching_live_processes(child_identities) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        survivors = self._matching_live_processes(child_identities)
+        if survivors:
+            survivor_details = {
+                pid: self._read_proc_entry(pid) for pid in survivors
+            }
+            for pid in survivors:
+                entry = self._read_proc_entry(pid)
+                if entry is not None and entry["start_time"] == child_identities[pid]:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            self.fail(
+                f"Bubblewrap descendants survived parent SIGKILL: {survivor_details}"
+            )
+        return True
+
+    @staticmethod
+    def _assert_manifest_matches_files(test_case, campaign_dir):
+        entries = {}
+        for line in (campaign_dir / "SHA256SUMS.txt").read_text(encoding="ascii").splitlines():
+            digest, name = line.split("  ", 1)
+            entries[name] = digest
+        present = {path.name for path in campaign_dir.iterdir() if path.name != "SHA256SUMS.txt"}
+        test_case.assertEqual(set(entries), present)
+        for name, digest in entries.items():
+            test_case.assertEqual(
+                hashlib.sha256((campaign_dir / name).read_bytes()).hexdigest(),
+                digest,
+                name,
+            )
+
+    def test_sigkill_during_real_bubblewrap_sample_kills_child_and_keeps_campaign_incomplete(self):
+        executor = SyntheticWorkloadExecutor()
+        try:
+            executor._sandbox_binaries()
+        except SandboxUnavailableError as exc:
+            self.skipTest(f"Trusted Bubblewrap unavailable: {exc}")
+
+        process, ready, evidence_base = self._start_sigkill_harness("during-sample")
+        campaign_id = ready["campaign_id"]
+        campaign_dir = evidence_base / campaign_id
+        child_pid = ready["child_pid"]
+        self.assertIsInstance(child_pid, int)
+        self.assertTrue(ready["child_running"])
+        self.assertIsInstance(ready["child_start_time"], str)
+        self.assertIsInstance(ready["runner_pid"], int)
+        self.assertIsInstance(ready["runner_start_time"], str)
+        self.assertIsNone(ready["error"])
+        child_identities = {
+            item["pid"]: item["start_time"]
+            for item in ready["process_identities"]
+        }
+        self.assertIn(ready["runner_pid"], child_identities)
+        descendants = self._proc_descendants(process.pid)
+        if child_pid in descendants:
+            self.assertEqual(descendants[child_pid]["start_time"], ready["child_start_time"])
+        child_identities.update({
+            pid: entry["start_time"] for pid, entry in descendants.items()
+        })
+        child_identities[child_pid] = ready["child_start_time"]
+        self.assertTrue(child_identities)
+        self.assertTrue((campaign_dir / "sample-01.receipt.json").is_file())
+        self.assertTrue((campaign_dir / "sample-02.started.json").is_file())
+        checkpoint = json.loads((campaign_dir / "checkpoint.json").read_text())
+        self.assertEqual(checkpoint["state"], "SAMPLE_RUNNING")
+        self.assertEqual(checkpoint["current_sample"], 2)
+
+        self._terminate_harness_and_verify_children(process, child_identities)
+
+        self._assert_manifest_matches_files(self, campaign_dir)
+        receipt = json.loads((campaign_dir / "sample-01.receipt.json").read_text())
+        self.assertEqual(receipt["validation"], "PASS")
+        before = self._evidence_snapshot(campaign_dir)
+        first = inspect_synthetic_campaign(campaign_id, evidence_base)
+        second = inspect_synthetic_campaign(campaign_id, evidence_base)
+        self.assertEqual(first.inspection_status, "ACTIVE_OR_UNKNOWN")
+        self.assertEqual(first.verdict, "NOT_DEMONSTRATED")
+        self.assertEqual(second.to_dict(), first.to_dict())
+        self.assertEqual(self._evidence_snapshot(campaign_dir), before)
+
+    def test_sigkill_after_durable_receipt_preserves_it_without_claiming_completion(self):
+        executor = SyntheticWorkloadExecutor()
+        try:
+            executor._sandbox_binaries()
+        except SandboxUnavailableError as exc:
+            self.skipTest(f"Trusted Bubblewrap unavailable: {exc}")
+
+        process, ready, evidence_base = self._start_sigkill_harness("after-receipt")
+        campaign_id = ready["campaign_id"]
+        campaign_dir = evidence_base / campaign_id
+        self.assertEqual(ready["child_pid"], None)
+        self.assertEqual(self._proc_descendants(process.pid), {})
+        self.assertTrue((campaign_dir / "sample-01.receipt.json").is_file())
+        self.assertTrue((campaign_dir / "sample-02.started.json").is_file())
+        checkpoint = json.loads((campaign_dir / "checkpoint.json").read_text())
+        self.assertEqual(checkpoint["state"], "SAMPLE_RUNNING")
+        self.assertEqual(checkpoint["samples_completed"], 1)
+
+        self._terminate_harness_and_verify_children(process, {})
+
+        self._assert_manifest_matches_files(self, campaign_dir)
+        receipt = json.loads((campaign_dir / "sample-01.receipt.json").read_text())
+        self.assertEqual(receipt["validation"], "PASS")
+        before = self._evidence_snapshot(campaign_dir)
+        result = inspect_synthetic_campaign(campaign_id, evidence_base)
+        self.assertEqual(result.inspection_status, "ACTIVE_OR_UNKNOWN")
+        self.assertEqual(result.verdict, "NOT_DEMONSTRATED")
+        self.assertEqual(self._evidence_snapshot(campaign_dir), before)
 
     def _run_until_simulated_cut(self, cut):
         campaign_id = f"{cut['id']:032x}"

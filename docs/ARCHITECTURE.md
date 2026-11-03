@@ -101,7 +101,7 @@ The **ISyCo Hardware Research Agent (IHRA)** is a modular, security-hardened Lin
 * **Sequence:** Verifies runner and absolute trusted sandbox binaries, starts one sample at a time through `SyntheticWorkloadExecutor`, validates each typed receipt and oracle digest, and aborts on the first failure or mutation.
 * **Evidence:** Creates a private campaign directory under XDG state (or `~/.local/state`), stores the canonical plan, campaign/sample records and a SHA-256 manifest via atomic writes. Symlink components, non-private destinations and repository-local evidence paths are rejected.
 * **Authority boundary:** This provides sequence autonomy and contract analysis only. Proposals are inert data and all fields are closed-schema; only the fixed plan is eligible. TTY consent is not cryptographic human identity and does not protect against a malicious same-UID process. Planning authority, hardware authority, general recovery and performance claims remain absent.
-* **Observed controls:** [IHRA-01 control results](SYNTHETIC_EXPERIMENT_CONTROLS.md) records each adversarial case, distinguishes simulated from live checks, and links the local evidence by campaign identifier and manifest digest.
+* **Observed controls:** [IHRA-01 control results](SYNTHETIC_EXPERIMENT_CONTROLS.md) records each adversarial case, distinguishes simulated from live checks, and links the local evidence by campaign identifier and manifest digest. Linux/Bubblewrap parent-`SIGKILL` tests cover an active fixed workload and the interval after a durable receipt; they do not establish power-loss safety, storage durability, or automatic resumption.
 
 ### 2.6 Rollback Controller (`core/rollback.py`)
 * **Role:** Independent state restoration conduit.

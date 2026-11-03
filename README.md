@@ -82,6 +82,8 @@ The Sentinel no longer accepts `--human-approved` or a caller-provided tier as a
 
 The campaign inspector is read-only and never infers abandonment from age or PID absence. It returns `ACTIVE_OR_UNKNOWN` for a persisted `RUNNING` campaign, `INCOMPLETE` / `NOT_DEMONSTRATED` for missing or inconsistent evidence, and `COMPLETED_VALID` only when the current proposal, plan, terminal checkpoint, five receipts, and manifest agree. Historical evidence remains readable but is not upgraded to `COMPLETED_VALID` when it lacks the current proposal/checkpoint links.
 
+Real Linux tests now also kill the campaign parent with `SIGKILL` while the fixed Bubblewrap workload is active and after a previous sample receipt is durable. In both tested timings the captured sandbox descendants exit, prior receipt evidence remains verifiable, and inspection does not report success. These are isolated test-harness runs with temporary evidence, not a standalone evidence bundle or proof of human authorization. `SIGTERM`, power loss, storage failure, and automatic recovery/resumption remain untested or unavailable.
+
 ## Protocol and evidence
 
 The [Common Hardware Research Pipeline](docs/COMMON_RESEARCH_PIPELINE.md) describes the **target workflow**, not a fully implemented unattended service:
@@ -122,7 +124,7 @@ These are **source case studies**, not optimizations performed automatically by 
 python3 -m unittest discover -s tests -v
 ```
 
-The repository contains `unittest` tests for mocked adapters, Sentinel allowlist denials, constrained rollback behavior, verifier input bounds, required hashes, fixture replay, the fixed workload executor, ten synthetic campaign adversarial controls, read-only campaign recovery inspection, and simulated cuts at persistence boundaries. The [IHRA-01 control report](docs/SYNTHETIC_EXPERIMENT_CONTROLS.md) separates simulated controls from real Linux process checks and records the verified campaign and timeout evidence. The five-sample campaign demonstrates repeatability only—not performance or hardware optimization. Crash-consistent checkpoints and read-only inspection are implemented, but real abrupt process-kill recovery, resumption, autonomous planning, general authorization, and hardware changes are not demonstrated or provided.
+The repository contains `unittest` tests for mocked adapters, Sentinel allowlist denials, constrained rollback behavior, verifier input bounds, required hashes, fixture replay, the fixed workload executor, ten synthetic campaign adversarial controls, read-only campaign recovery inspection, simulated cuts at persistence boundaries, and two real Linux/Bubblewrap parent-`SIGKILL` timings. The [IHRA-01 control report](docs/SYNTHETIC_EXPERIMENT_CONTROLS.md) separates simulated controls from real process checks and records the verified campaign and timeout evidence. The five-sample campaign demonstrates repeatability only—not performance or hardware optimization. Checkpoints, read-only inspection, and the two tested interruption timings are demonstrated; automatic recovery/resumption, power-loss or storage-failure behavior, autonomous planning, general authorization, and hardware changes are not demonstrated or provided.
 
 Consult [fixtures](fixtures/), [experiment schema](schemas/experiment.schema.json) and [evidence schema](schemas/evidence.schema.json) for the current test contracts. Synthetic fixtures are not raw hardware execution logs.
 
