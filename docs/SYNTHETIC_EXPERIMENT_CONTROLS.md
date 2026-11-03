@@ -91,7 +91,32 @@ stores `proposal.json` and `plan.json` byte-for-byte in the campaign evidence.
   All 13 manifest entries verified; SHA-256 of `SHA256SUMS.txt`:
   `2c6d572ea7ecd1b930dcf88ee8b7c9b5b5ec9b2fde87ffd90b56ad25f2e03c1b`.
 
+### User-operated manual TTY campaign
+
+The user ran `run-synthetic-experiment` from an interactive terminal and
+provided the terminal transcript showing the exact authorization phrase
+entered at the TTY prompt. The corresponding local evidence was independently
+checked: the campaign record is complete, all five sample receipts pass, and
+all manifest entries match their SHA-256 hashes.
+
+- Campaign: `d70a7bad893641a89d22f43dd5fa446a`
+- State: `COMPLETED` / `DEMONSTRATED`, 5 of 5 samples
+- Authorization record: `local_tty_confirmation`; this records the CLI path,
+  not cryptographic proof of the identity or physical action of the operator.
+- Proposal SHA-256:
+  `7f9d95db51f0847ebbaac59f5d9b9cc6091020cff42c40011627140d53b8a263`.
+- Plan SHA-256:
+  `135907eb2bf31e57a60ffe0a414a6fcb7b0a8cd55c744ae9984e683e61efa010`.
+- Result SHA-256 for all five samples:
+  `40c778e38799bb8b101d4bb6af933608069274c553be25f62398fa852030ad68`.
+- Evidence directory:
+  `~/.local/state/ihra/synthetic-experiments/d70a7bad893641a89d22f43dd5fa446a/`.
+  All 13 manifest entries verified; SHA-256 of `SHA256SUMS.txt`:
+  `6ede40026a4751fbc84de3ecfecef0bf4ba150697f570a624df5de199acfe475`.
+
 The grant prevents accidental API bypass and reuse within this process;
 Python objects and module internals are not a security boundary against
 arbitrary code running as the same user. The controlling TTY ceremony
-expresses local operator consent only.
+expresses local operator consent only. The manual interaction is evidenced by
+the user-provided terminal transcript; the campaign artifacts alone cannot
+prove who entered the confirmation.

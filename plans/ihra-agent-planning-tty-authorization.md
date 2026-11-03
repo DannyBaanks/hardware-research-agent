@@ -2,7 +2,7 @@
 
 ## Estado
 
-COMPLETED WITH LIMITATION — 6 milestones (M0–M5). El repositorio se creó después del freeze del 2026-10-30 y queda fuera de los 101 repositorios públicos ya existentes incluidos en ese freeze; verificación por GitHub API: `created_at=2026-11-03T01:44:29Z`. La ruta de autorización TTY fue probada mediante PTY automatizada; que una persona escriba la confirmación en una sesión real no fue demostrado. TTY no es autenticación criptográfica de identidad.
+COMPLETED WITH LIMITATION — 6 milestones (M0–M5). El repositorio se creó después del freeze del 2026-10-30 y queda fuera de los 101 repositorios públicos ya existentes incluidos en ese freeze; verificación por GitHub API: `created_at=2026-11-03T01:44:29Z`. El usuario presentó el transcript de una corrida interactiva que muestra la confirmación escrita manualmente; se verificaron localmente los cinco recibos y el manifiesto. Esto documenta consentimiento TTY reportado por el usuario, no autentica identidad ni protege contra procesos del mismo UID. La recuperación durable ante terminación abrupta sigue sin demostrarse.
 
 ## Objetivo
 
@@ -22,6 +22,7 @@ La autorización TTY es una ceremonia de consentimiento local, no una prueba cri
 - `git log -3 --oneline`: `671e324` (`feat: add bounded synthetic experiment orchestration`) es el HEAD; el árbol estaba limpio y `main` estaba cinco commits adelante de `origin/main`.
 - `python3 -m unittest discover -s tests -v`: última ejecución registrada, 57/57 pruebas OK. `python3 -m core.cli show-synthetic-plan` emitió el plan fijo y el digest `135907eb2bf31e57a60ffe0a414a6fcb7b0a8cd55c744ae9984e683e61efa010`.
 - M0 ejecutado el 2026-11-03: `python3 -m unittest discover -s tests -v` pasó 57/57; `git diff --check` pasó; `plan_tool.py verify` aceptó este roadmap. La suite final pasó 78/78; la campaña `9cb0377f48a440e3a516e2f6447488ed` completó 5/5 bajo Bubblewrap mediante PTY automatizada, sin demostrar consentimiento humano.
+- Corrida manual reportada el 2026-11-03: campaña `d70a7bad893641a89d22f43dd5fa446a`, `COMPLETED` / `DEMONSTRATED`, 5/5. El transcript aportado por el usuario muestra la frase exacta introducida en la terminal interactiva. Los cinco recibos, los digests de plan/propuesta y las 13 entradas del manifiesto se verificaron en disco; SHA-256 del manifiesto: `6ede40026a4751fbc84de3ecfecef0bf4ba150697f570a624df5de199acfe475`. Los artefactos no son prueba criptográfica de identidad.
 - Bridge, anuncio `#10031`: el freeze del 2026-10-30 se aplica a los 101 repositorios públicos existentes entonces. `gh api repos/DannyBaanks/hardware-research-agent --jq '{created_at, pushed_at, visibility, default_branch}'` confirmó `created_at=2026-11-03T01:44:29Z`, posterior al freeze; IHRA no pertenece a ese conjunto congelado.
 
 ## Alcance
@@ -157,5 +158,5 @@ La autorización TTY es una ceremonia de consentimiento local, no una prueba cri
 
 ## Próximo paso
 
-- **Primer paso:** Si se requiere demostrar consentimiento de una persona, ejecutar la campaña desde una terminal local interactiva y escribir allí la frase mostrada; la campaña PTY automatizada no demuestra aprobación humana.
-- **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && python3 -m core.cli show-synthetic-proposal > /tmp/ihra-proposal.json && python3 -m core.cli review-synthetic-proposal /tmp/ihra-proposal.json && python3 -m core.cli run-synthetic-experiment --proposal /tmp/ihra-proposal.json`
+- **Primer paso:** Diseñar y falsar el ciclo de vida de una campaña interrumpida abruptamente; ningún estado `RUNNING` debe confundirse con éxito ni reanudarse automáticamente.
+- **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && python3 -m unittest tests.test_synthetic_experiment -v`
