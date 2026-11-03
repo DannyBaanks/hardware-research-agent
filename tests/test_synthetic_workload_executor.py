@@ -1,5 +1,9 @@
 import json
+import stat
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core.executor import SandboxUnavailableError, SyntheticWorkloadExecutor
@@ -45,7 +49,9 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertIn("--unshare-all", command)
         self.assertIn("--clearenv", command)
+        self.assertIn("--ro-bind-data", command)
         self.assertEqual(command[-1], "/app/workload_runner.py")
+        self.assertEqual(len(popen.call_args.kwargs["pass_fds"]), 1)
 
     def test_rejects_mismatched_hash(self):
         result = json.loads(self.output)
@@ -103,6 +109,20 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported workload"):
             self.executor.run("user-provided-command")
 
+    def test_rejects_setuid_sandbox_binary(self):
+        executable = Path("/trusted/bwrap")
+        metadata = SimpleNamespace(
+            st_uid=0,
+            st_mode=stat.S_IFREG | stat.S_ISUID | 0o755,
+        )
+        with patch.object(Path, "is_file", return_value=True), \
+             patch.object(Path, "resolve", return_value=executable), \
+             patch.object(Path, "stat", return_value=metadata), \
+             patch("core.executor.os.access", return_value=True):
+            trusted = self.executor._trusted_executable(("/usr/bin/bwrap",))
+
+        self.assertIsNone(trusted)
+
     def test_reports_sandbox_timeout_as_failure(self):
         binary_patch, popen_patch, collect_patch = self._mock_process(
             output=b"", failure="Workload exceeded wall-clock timeout"
@@ -114,15 +134,30 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         self.assertEqual(receipt.status, "FAILED")
         self.assertIn("timeout", receipt.reason)
 
+    def test_interrupt_terminates_the_process_group(self):
+        self.process.pid = 12345
+        binary_patch, popen_patch, _ = self._mock_process()
+        with binary_patch, popen_patch, \
+             patch.object(self.executor, "_collect_output", side_effect=KeyboardInterrupt()), \
+             patch("core.executor.os.killpg") as killpg:
+            with self.assertRaises(KeyboardInterrupt):
+                self.executor.run(self.executor.WORKLOAD_ID)
+
+        killpg.assert_called_once()
+        self.assertEqual(killpg.call_args.args[0], self.process.pid)
+        self.process.wait.assert_called()
+
     def test_fails_closed_when_runner_differs_from_reviewed_version(self):
         binaries = ("/usr/bin/bwrap", "/usr/bin/python3")
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        altered_runner = Path(temp.name) / "altered-workload-runner.py"
+        altered_runner.write_bytes(b"unreviewed runner")
         with (
             patch.object(self.executor, "_sandbox_binaries", return_value=binaries),
-            patch.object(self.executor, "runner_path") as runner_path,
+            patch.object(self.executor, "runner_path", altered_runner),
             patch("core.executor.subprocess.Popen") as popen,
         ):
-            runner_path.is_file.return_value = True
-            runner_path.read_bytes.return_value = b"unreviewed runner"
             receipt = self.executor.run(self.executor.WORKLOAD_ID)
 
         self.assertEqual(receipt.status, "FAILED")

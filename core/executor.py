@@ -1,4 +1,5 @@
 import hashlib
+import fcntl
 import json
 import math
 import os
@@ -102,6 +103,8 @@ class WorkloadReceipt:
     persistent_host_state_changed: bool
     sandboxed_processes_started: int
     reason: str
+    runner_sha256: Optional[str] = None
+    process_exit_code: Optional[int] = None
 
     def to_dict(self) -> Dict[str, object]:
         return asdict(self)
@@ -115,7 +118,7 @@ class SyntheticWorkloadExecutor:
     """Runs one fixed, unprivileged CPU workload inside a rootless bubblewrap sandbox."""
 
     WORKLOAD_ID = "sha256-chain-v1"
-    RUNNER_SHA256 = "aecbd370a6f781258bc0b46398007c098c76b2570d08c569aa149fc7a599916d"
+    RUNNER_SHA256 = "6bcbbad859e2bf01898d55196d893335fa6dee94dcc64ebcae0a379a0dde8edf"
     EXPECTED_OUTPUT_SHA256 = "40c778e38799bb8b101d4bb6af933608069274c553be25f62398fa852030ad68"
     WALL_TIMEOUT_SECONDS = 8
     CPU_LIMIT_SECONDS = 4
@@ -134,7 +137,9 @@ class SyntheticWorkloadExecutor:
                 continue
             resolved = path.resolve()
             metadata = resolved.stat()
-            if metadata.st_uid != 0 or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            if metadata.st_uid != 0 or metadata.st_mode & (
+                stat.S_IWGRP | stat.S_IWOTH | stat.S_ISUID | stat.S_ISGID
+            ):
                 continue
             return str(resolved)
         return None
@@ -159,18 +164,65 @@ class SyntheticWorkloadExecutor:
             resource.RLIMIT_AS,
             (cls.ADDRESS_SPACE_LIMIT_BYTES, cls.ADDRESS_SPACE_LIMIT_BYTES),
         )
-        resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
         resource.setrlimit(
             resource.RLIMIT_NOFILE, (cls.NOFILE_LIMIT, cls.NOFILE_LIMIT)
         )
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
-    def _sandbox_command(self, bubblewrap: str, python: str) -> Tuple[str, ...]:
-        if not self.runner_path.is_file():
-            raise FileNotFoundError(f"Fixed workload runner is missing: {self.runner_path}")
-        runner_digest = hashlib.sha256(self.runner_path.read_bytes()).hexdigest()
+    def _sealed_runner_fd(self) -> int:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        runner_source_fd = os.open(self.runner_path, flags)
+        try:
+            metadata = os.fstat(runner_source_fd)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("Fixed workload runner is not a regular file")
+            if metadata.st_size > 256 * 1024:
+                raise ValueError("Fixed workload runner exceeds the reviewed size limit")
+            chunks = []
+            remaining = metadata.st_size
+            while remaining:
+                chunk = os.read(runner_source_fd, remaining)
+                if not chunk:
+                    raise OSError("Fixed workload runner changed during read")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            runner_bytes = b"".join(chunks)
+        finally:
+            os.close(runner_source_fd)
+        runner_digest = hashlib.sha256(runner_bytes).hexdigest()
         if runner_digest != self.RUNNER_SHA256:
             raise ValueError("Fixed workload runner does not match the reviewed version")
+        if not hasattr(os, "memfd_create"):
+            raise OSError("Sealed in-memory runner files are required on this platform")
+        runner_fd = os.memfd_create(
+            "ihra-fixed-workload-runner",
+            getattr(os, "MFD_ALLOW_SEALING", 0),
+        )
+        try:
+            view = memoryview(runner_bytes)
+            while view:
+                written = os.write(runner_fd, view)
+                view = view[written:]
+            seals = (
+                fcntl.F_SEAL_SEAL
+                | fcntl.F_SEAL_SHRINK
+                | fcntl.F_SEAL_GROW
+                | fcntl.F_SEAL_WRITE
+            )
+            fcntl.fcntl(runner_fd, fcntl.F_ADD_SEALS, seals)
+            if fcntl.fcntl(runner_fd, fcntl.F_GET_SEALS) & seals != seals:
+                raise OSError("Could not seal fixed workload runner")
+            if hashlib.sha256(os.pread(runner_fd, len(runner_bytes), 0)).hexdigest() != runner_digest:
+                raise OSError("Sealed workload runner failed readback verification")
+            os.lseek(runner_fd, 0, os.SEEK_SET)
+            return runner_fd
+        except Exception:
+            os.close(runner_fd)
+            raise
+
+    def _sandbox_command(
+        self, bubblewrap: str, python: str, runner_fd: int
+    ) -> Tuple[str, ...]:
         return (
             bubblewrap,
             "--die-with-parent",
@@ -182,7 +234,7 @@ class SyntheticWorkloadExecutor:
             "--dir", "/etc",
             "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache",
             "--dir", "/app",
-            "--ro-bind", str(self.runner_path), "/app/workload_runner.py",
+            "--ro-bind-data", str(runner_fd), "/app/workload_runner.py",
             "--proc", "/proc",
             "--dev", "/dev",
             "--tmpfs", "/tmp",
@@ -244,6 +296,9 @@ class SyntheticWorkloadExecutor:
                 self._terminate(process)
                 return bytes(stdout), bytes(stderr), "Workload exceeded wall-clock timeout"
             return bytes(stdout), bytes(stderr), None
+        except KeyboardInterrupt:
+            self._terminate(process)
+            raise
         finally:
             selector.close()
 
@@ -267,9 +322,13 @@ class SyntheticWorkloadExecutor:
                 reason=str(exc),
             )
 
+        runner_fd = None
         try:
-            command = self._sandbox_command(bubblewrap, python)
+            runner_fd = self._sealed_runner_fd()
+            command = self._sandbox_command(bubblewrap, python, runner_fd)
         except (OSError, ValueError) as exc:
+            if runner_fd is not None:
+                os.close(runner_fd)
             return WorkloadReceipt(
                 workload_id=workload_id,
                 status="FAILED",
@@ -281,6 +340,8 @@ class SyntheticWorkloadExecutor:
                 persistent_host_state_changed=False,
                 sandboxed_processes_started=0,
                 reason=f"Fixed workload preflight failed: {exc}",
+                runner_sha256=None,
+                process_exit_code=None,
             )
         started = time.monotonic()
         try:
@@ -293,8 +354,9 @@ class SyntheticWorkloadExecutor:
                 env={"PATH": "/usr/bin:/bin", "LANG": "C"},
                 start_new_session=True,
                 preexec_fn=self._apply_resource_limits,
+                pass_fds=(runner_fd,),
             )
-        except OSError as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             return WorkloadReceipt(
                 workload_id=workload_id,
                 status="FAILED",
@@ -306,11 +368,20 @@ class SyntheticWorkloadExecutor:
                 persistent_host_state_changed=False,
                 sandboxed_processes_started=0,
                 reason=f"Could not start sandbox: {exc}",
+                runner_sha256=self.RUNNER_SHA256,
+                process_exit_code=None,
             )
+        finally:
+            if runner_fd is not None:
+                os.close(runner_fd)
 
-        stdout, stderr, failure = self._collect_output(
-            process, started + self.WALL_TIMEOUT_SECONDS
-        )
+        try:
+            stdout, stderr, failure = self._collect_output(
+                process, started + self.WALL_TIMEOUT_SECONDS
+            )
+        except KeyboardInterrupt:
+            self._terminate(process)
+            raise
         elapsed = time.monotonic() - started
         if failure is not None:
             return WorkloadReceipt(
@@ -324,6 +395,8 @@ class SyntheticWorkloadExecutor:
                 persistent_host_state_changed=False,
                 sandboxed_processes_started=1,
                 reason=failure,
+                runner_sha256=self.RUNNER_SHA256,
+                process_exit_code=process.returncode,
             )
 
         if process.returncode != 0:
@@ -339,6 +412,8 @@ class SyntheticWorkloadExecutor:
                 persistent_host_state_changed=False,
                 sandboxed_processes_started=1,
                 reason=f"Sandboxed workload exited {process.returncode}: {detail}",
+                runner_sha256=self.RUNNER_SHA256,
+                process_exit_code=process.returncode,
             )
 
         try:
@@ -382,6 +457,8 @@ class SyntheticWorkloadExecutor:
                 persistent_host_state_changed=False,
                 sandboxed_processes_started=1,
                 reason=parse_error,
+                runner_sha256=self.RUNNER_SHA256,
+                process_exit_code=process.returncode,
             )
 
         return WorkloadReceipt(
@@ -398,4 +475,6 @@ class SyntheticWorkloadExecutor:
                 "Fixed synthetic CPU workload completed in a network-isolated sandbox "
                 "with read-only host mounts and isolated temporary filesystems"
             ),
+            runner_sha256=self.RUNNER_SHA256,
+            process_exit_code=process.returncode,
         )

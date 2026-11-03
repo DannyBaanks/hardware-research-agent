@@ -7,6 +7,7 @@ if hasattr(resource, "RLIMIT_NPROC"):
     _, hard_limit = resource.getrlimit(resource.RLIMIT_NPROC)
     process_limit = 4 if hard_limit == resource.RLIM_INFINITY else min(4, hard_limit)
     resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
+resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
 
 
 WORKLOAD_ID = "sha256-chain-v1"

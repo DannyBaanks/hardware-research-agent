@@ -17,6 +17,7 @@ from .sentinel import SentinelGate, SentinelVerdict
 from .verifier import AntiFakeVerifier, VerificationVerdict
 from .rollback import RollbackController
 from .executor import DryRunExecutor, SyntheticWorkloadExecutor
+from .experiment import SyntheticExperimentPlan, SyntheticExperimentRunner
 from adapters.adapters import (
     LinuxInventoryAdapter,
     LinuxCpuPerfAdapter,
@@ -131,6 +132,28 @@ def cmd_run_synthetic(args):
         sys.exit(1)
 
 
+def cmd_show_synthetic_plan(args):
+    plan = SyntheticExperimentPlan.fixed_repeatability_plan()
+    print(json.dumps({
+        "plan": plan.to_dict(),
+        "plan_sha256": plan.sha256,
+        "authorization_command": (
+            "python3 -m core.cli run-synthetic-experiment "
+            f"--authorize-plan-sha256 {plan.sha256}"
+        ),
+    }, indent=2))
+
+
+def cmd_run_synthetic_experiment(args):
+    result = SyntheticExperimentRunner().run(
+        SyntheticExperimentPlan.fixed_repeatability_plan(),
+        authorized_plan_sha256=args.authorize_plan_sha256,
+    )
+    print(json.dumps(result.to_dict(), indent=2))
+    if result.verdict != "DEMONSTRATED":
+        sys.exit(1)
+
+
 def cmd_setup(args):
     """Checks and reports repository and toolchain status for agents."""
     base_dir = Path.home() / "Development"
@@ -212,6 +235,23 @@ def main():
         help="Reviewed workload identifier; arbitrary commands are not accepted",
     )
     p_run.set_defaults(func=cmd_run_synthetic)
+
+    p_plan = subparsers.add_parser(
+        "show-synthetic-plan",
+        help="Display the fixed five-sample repeatability plan and its approval digest",
+    )
+    p_plan.set_defaults(func=cmd_show_synthetic_plan)
+
+    p_campaign = subparsers.add_parser(
+        "run-synthetic-experiment",
+        help="Run the authorized fixed five-sample campaign in the rootless sandbox",
+    )
+    p_campaign.add_argument(
+        "--authorize-plan-sha256",
+        required=True,
+        help="Explicitly authorize this exact fixed campaign plan digest",
+    )
+    p_campaign.set_defaults(func=cmd_run_synthetic_experiment)
 
     # setup
     p_setup = subparsers.add_parser("setup", help="Verify stack paths and dependencies")

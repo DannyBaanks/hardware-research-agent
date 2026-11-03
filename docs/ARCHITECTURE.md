@@ -1,6 +1,6 @@
 # Architecture Specification: Hardware Research Agent (IHRA)
 
-> This document is a target architecture, not a description of currently enforced guarantees. `core/executor.py` replays fixed synthetic fixtures and can run one pinned CPU-only workload inside a rootless Bubblewrap sandbox. It does not execute proposed experiments, request authorization, access hardware controls, or alter persistent hardware/system state.
+> This document is a target architecture, not a description of currently enforced guarantees. `core/executor.py` replays fixed synthetic fixtures and can run one pinned CPU-only workload inside a rootless Bubblewrap sandbox. `core/experiment.py` orchestrates one immutable, explicitly digest-authorized five-sample repeatability plan and writes private external evidence. Neither component executes proposed hardware experiments, grants general authorization, accesses hardware controls, or alters persistent hardware/system state.
 
 ## 1. System Overview
 
@@ -94,6 +94,14 @@ The **ISyCo Hardware Research Agent (IHRA)** is a modular, security-hardened Lin
   * Continuously queries thermal and memory sensors during workload execution.
   * Immediately aborts execution if temperature reaches $99\text{ }^\circ\text{C}$ or memory free drops below $500\text{ MB}$.
   * Always invokes `RollbackController` upon completion or abort.
+
+### 2.5.1 Bounded Synthetic Experiment Runner (`core/experiment.py`)
+* **Role:** Executes the one built-in five-sample `sha256-chain-v1` repeatability plan after an operator supplies the exact canonical plan SHA-256 on the CLI.
+* **Plan:** Frozen dataclass, strict fixed values, canonical JSON digest, no arbitrary plan-file or executable arguments, 8-second per-sample ceiling and 60-second campaign ceiling.
+* **Sequence:** Verifies runner and absolute trusted sandbox binaries, starts one sample at a time through `SyntheticWorkloadExecutor`, validates each typed receipt and oracle digest, and aborts on the first failure or mutation.
+* **Evidence:** Creates a private campaign directory under XDG state (or `~/.local/state`), stores the canonical plan, campaign/sample records and a SHA-256 manifest via atomic writes. Symlink components, non-private destinations and repository-local evidence paths are rejected.
+* **Authority boundary:** This provides sequence autonomy and contract analysis only. The CLI digest is an explicit start action but is not cryptographic human identity. Planning authority, hardware authority, general recovery and performance claims remain absent.
+* **Observed controls:** [IHRA-01 control results](SYNTHETIC_EXPERIMENT_CONTROLS.md) records each adversarial case, distinguishes simulated from live checks, and links the local evidence by campaign identifier and manifest digest.
 
 ### 2.6 Rollback Controller (`core/rollback.py`)
 * **Role:** Independent state restoration conduit.

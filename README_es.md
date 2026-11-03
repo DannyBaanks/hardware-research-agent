@@ -2,10 +2,10 @@
 
 **Protocolo de investigación de hardware en Linux: reproducible, supervisado y orientado a evidencia.**
 
-[English](README.md) · [Pipeline científico](docs/COMMON_RESEARCH_PIPELINE.md) · [Contratos de seguridad](docs/SAFETY_CONTRACTS.md) · [Roadmap](ROADMAP.md) · [Casos de investigación](#origen-de-la-investigación)
+[English](README.md) · [Pipeline científico](docs/COMMON_RESEARCH_PIPELINE.md) · [Contratos de seguridad](docs/SAFETY_CONTRACTS.md) · [Resultados IHRA-01](docs/SYNTHETIC_EXPERIMENT_CONTROLS.md) · [Roadmap](ROADMAP.md) · [Casos de investigación](#origen-de-la-investigación)
 
 > [!IMPORTANT]
-> **Prototipo público de investigación (HRA-00), no un optimizador autónomo listo para producción.** IHRA puede descubrir ciertas capacidades, evaluar cadenas de comandos, consultar telemetría seleccionada y contrastar datos de benchmarks. **Todavía no implementa ni obliga a cumplir un ciclo completo, aislado y autónomo de autorización, ejecución y restauración.** No le otorgues privilegios por asumir que toda la seguridad descrita en los documentos ya está implementada.
+> **Prototipo público de investigación, no un optimizador autónomo de hardware.** IHRA ya permite iniciar explícitamente una campaña sintética fija de cinco muestras, además de descubrir capacidades y reproducir evidencia. **No autoriza ni ejecuta cambios de hardware/sistema ni ofrece recuperación durable para experimentos generales.** No le otorgues privilegios por asumir que toda la seguridad descrita en los documentos ya está implementada.
 
 **Principio:** concluir **«no se encontró una mejora segura»** también es un éxito científico. Este repositorio no promete más FPS, más tokens por segundo ni desbloqueos universales.
 
@@ -19,6 +19,7 @@
 | [Controlador de rollback](core/rollback.py) | Restringe la ejecución a restaurar y consultar perfiles de energía, sin shell | Es una **pieza independiente**, no está conectada a un ejecutor de experimentos y no demuestra rollback extremo a extremo |
 | [Ejecutor dry-run](core/executor.py) | Reproduce dos fixtures sintéticos de evidencia a través del verificador | **No ejecuta workloads, no accede al hardware ni cambia el sistema** |
 | [Ejecutor de workload sintético](core/executor.py) | Ejecuta únicamente el workload CPU fijo `sha256-chain-v1` en Bubblewrap rootless, con montajes del host de solo lectura y temporales aislados | No es un ejecutor de benchmarks o experimentos; no acepta comandos arbitrarios, no lee/controla hardware ni escribe estado persistente del host |
+| [Orquestador sintético](core/experiment.py) | Ejecuta un plan inmutable de cinco muestras secuenciales, autorizado explícitamente por su digest, y valida cada recibo | Solo autonomía de secuencia y análisis contractual; no planifica, no controla hardware, no acepta planes arbitrarios ni modifica nada fuera de su directorio privado de evidencia |
 | [Adaptador Ada](adapters/ada_adapter.py) | Detecta ciertos PCI IDs NVIDIA y consulta el parámetro de energía y `nvidia-smi` | Un parámetro del driver **no demuestra** que el unlock esté activo ni que sea seguro |
 | [Adaptador REA](adapters/rea_adapter.py) | Localiza herramientas y puede invocar análisis mediante Node o npx | **Ejecuta herramientas externas**; no las aísla ni garantiza ausencia de descargas |
 | Wrapper de Node | [bin/ihra.mjs](bin/ihra.mjs) llama al CLI Python | Node solo ofrece otra entrada; el núcleo del CLI es Python |
@@ -46,6 +47,12 @@ python3 -m core.cli dry-run ada_d3cold_false_positive
 # Ejecutar el único workload CPU fijo en sandbox rootless
 python3 -m core.cli run-synthetic sha256-chain-v1
 
+# Revisar el plan fijo de cinco muestras y su digest de autorización
+python3 -m core.cli show-synthetic-plan
+
+# Tras revisar el plan, reemplaza PLAN_SHA256 por su digest exacto
+python3 -m core.cli run-synthetic-experiment --authorize-plan-sha256 PLAN_SHA256
+
 # Alternativa usando Node.js
 node bin/ihra.mjs discover
 ```
@@ -63,9 +70,11 @@ node bin/ihra.mjs discover
 | `python3 -m core.cli sentinel 'powerprofilesctl get'` | Comprueba un comando exacto de solo lectura contra una lista permitida | Solo clasifica; no ejecuta. Deniega cambios de estado y comandos no incluidos |
 | `python3 -m core.cli dry-run <fixture>` | Reproduce uno de dos fixtures sintéticos incluidos usando el verificador | Solo usa datos fixture; no ejecuta workloads/comandos, no lee ni modifica hardware y no hace rollback |
 | `python3 -m core.cli run-synthetic sha256-chain-v1` | Ejecuta una cadena fija de 20.000 pasos SHA-256 en un sandbox rootless de Bubblewrap | Requiere Bubblewrap y Python del sistema confiables; no acepta comandos o scripts, no accede a telemetría/control de hardware ni persiste cambios en el host |
+| `python3 -m core.cli show-synthetic-plan` | Muestra el único plan de repetibilidad autorizado y su digest canónico | Revisa todas las muestras y límites fijos antes de autorizar |
+| `python3 -m core.cli run-synthetic-experiment --authorize-plan-sha256 <digest>` | Ejecuta cinco muestras secuenciales, máximo 8 s por muestra y 60 s por campaña | El flag es una orden explícita local de inicio, no autenticación criptográfica del usuario; no se pueden cargar o ampliar planes |
 | `python3 -m core.cli inspect /ruta/al/archivo --tool inspect_malbolge` | Delega el análisis a REA | Puede ejecutar Node o `npx`; verifica dependencias antes de usarlo |
 
-Sentinel ya no acepta `--human-approved` ni un nivel de riesgo del llamante como autoridad. Un veredicto para una operación de solo lectura **tampoco autoriza su ejecución**. El ejecutor sintético es un sandbox estrecho para un workload fijo; no está conectado a Sentinel, adaptadores de hardware, planes de experimento ni rollback. No hay aprobación autenticada para escrituras.
+Sentinel ya no acepta `--human-approved` ni un nivel de riesgo del llamante como autoridad. Un veredicto para una operación de solo lectura **tampoco autoriza su ejecución**. La campaña fija solo autoriza el plan sintético revisado; no está conectada a Sentinel, adaptadores de hardware, planes de experimento ni rollback. La evidencia se escribe atómicamente con permisos privados en `$XDG_STATE_HOME/ihra/synthetic-experiments/` (o `~/.local/state/ihra/synthetic-experiments/`); un fallo detiene la secuencia y conserva recibos completados. El digest confirma los bytes del plan, pero no autentica la identidad humana.
 
 ## Método científico y trazabilidad
 
@@ -107,7 +116,7 @@ Estos son **casos documentados que inspiraron IHRA**, no optimizaciones que el a
 python3 -m unittest discover -s tests -v
 ```
 
-Las pruebas `unittest` cubren adaptadores simulados, denegaciones de Sentinel, rollback restringido, límites del verificador, hashes requeridos, replay de fixtures y el ejecutor del workload sintético fijo. Las pruebas del executor comprueban su contrato, digest esperado, comportamiento fail-closed y resultados ante límites; una ejecución correcta en sandbox no demuestra rendimiento de hardware ni un ciclo autónomo de experimentación. No se afirma una validación física extremo a extremo. El árbol inspeccionado no contiene un workflow de GitHub Actions bajo `.github/workflows/`.
+Las pruebas `unittest` cubren adaptadores simulados, denegaciones de Sentinel, rollback restringido, límites del verificador, hashes requeridos, replay de fixtures, el executor fijo y diez controles adversariales sintéticos de campaña. El [informe de controles IHRA-01](docs/SYNTHETIC_EXPERIMENT_CONTROLS.md) separa las simulaciones de las comprobaciones reales de procesos en Linux y registra la evidencia verificada de campaña y timeout. La campaña de cinco muestras solo demuestra repetibilidad, no rendimiento ni optimización del hardware. No se implementan planificación autónoma, autorización general, cambios de hardware ni recuperación general ante fallos.
 
 Ver [fixtures](fixtures/), [esquema de experimento](schemas/experiment.schema.json) y [esquema de evidencia](schemas/evidence.schema.json). Las simulaciones **no son logs crudos de una máquina real**.
 

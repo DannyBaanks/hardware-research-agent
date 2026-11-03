@@ -1,6 +1,8 @@
 # Safety Contracts & Threat Model: IHRA
 
-> These contracts describe the intended policy, not guarantees already enforced by the prototype. Current code classifies an exact read-only allowlist, denies state-changing Sentinel requests, replays fixed synthetic fixtures, runs one pinned CPU-only workload in a rootless Bubblewrap sandbox, and provides a standalone constrained power-profile rollback helper. It does not implement an experiment-plan executor or authenticated write-approval lifecycle; see `README.md`.
+> These contracts describe the intended policy, not guarantees already enforced by the prototype. Current code classifies an exact read-only allowlist, denies state-changing Sentinel requests, replays fixed synthetic fixtures, runs one pinned CPU-only workload in a rootless Bubblewrap sandbox, and can orchestrate one explicitly digest-authorized five-sample synthetic repeatability campaign with private evidence. It does not implement an experiment-plan executor for arbitrary plans or an authenticated write-approval lifecycle; see `README.md`.
+
+The observed adversarial results and the distinction between simulated tests and real Linux process checks are recorded in [IHRA-01 Synthetic Experiment Controls](SYNTHETIC_EXPERIMENT_CONTROLS.md). A passing five-sample campaign demonstrates repeatability and contract analysis only; it is not evidence of performance improvement or hardware autonomy.
 
 ## 1. Core Safety Tenets
 
