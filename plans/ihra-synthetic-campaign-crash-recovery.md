@@ -19,8 +19,9 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 - `docs/SYNTHETIC_EXPERIMENT_CONTROLS.md:48-64`: el informe declara que `SIGKILL`, pérdida de energía y recuperación durable permanecen sin demostrar.
 - `README.md:122`: la capacidad actual excluye recuperación general ante crash.
 - `AGENTS.md:1-21`: seguridad read-only por defecto, no Tier 3 y suite obligatoria `python3 -m unittest discover -s tests -v`.
-- `git status --short --branch` y `git log -3 --oneline`: árbol limpio en `main`, HEAD `1d40890`; rama local siete commits adelante de `origin/main`, sin autorización de push.
-- Baseline ejecutado para este plan: `python3 -m unittest discover -s tests -q` → 78 tests OK.
+- `git status --short --branch` y `git log -3 --oneline`: árbol limpio en `main`, HEAD `1d40890` antes del roadmap; rama local siete commits adelante de `origin/main`, sin autorización de push.
+- Baseline ejecutado antes de M0 y repetido durante M0: `python3 -m unittest discover -s tests -v` → 78 tests OK.
+- Antes de M0 se leyeron los ocho manifiestos de campaña sin modificar evidencia. SHA-256 de `SHA256SUMS.txt`: `51c30b4d473d4621a32a08e8b7c403d2` → `9a620f63252c3d4500bcee5e2ec453e56987fb633360aafb749c17bec955024a`; `79c11a07aa2d465ca4372cdc8c616296` → `07f1487b8ccb7e5b1e874ce88cd6868991d82c5d7c2f108b607daa79165f58e4`; `97eaae4c119244e3b2470f6dae5b6639` → `021ba6daffb0ded0bb1eb2723eb9b949a40d4eb8c684cb3ff50c5ffd552e2729`; `98063a47bd9b4992b93dbdfe05472b60` → `66b36f8fb8d79f88815bf9370fb131ab597bf6dc583a8aa4cd2ddd3f99f1c2ad`; `9cb0377f48a440e3a516e2f6447488ed` → `2c6d572ea7ecd1b930dcf88ee8b7c9b5b5ec9b2fde87ffd90b56ad25f2e03c1b`; `a6205d56600b45929c85d6df62e2ac61` → `3ab600ea7cb6905b1a71ff2307381b3330858d6e63e14167df2a316e9fbad750`; `d70a7bad893641a89d22f43dd5fa446a` → `6ede40026a4751fbc84de3ecfecef0bf4ba150697f570a624df5de199acfe475`; `ec0cdc51a1454216b58e91775f71b58a` → `f208bee375666c56429b84f3edb9759ec9d43631d21c6cb7aaab14d471f97a4b`.
 - Búsqueda en `core`, `tests`, README y docs: no se encontró API/CLI de recuperación o reanudación; ausencia confirmada en las rutas inspeccionadas.
 
 ## Alcance
@@ -57,6 +58,8 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 - **Aceptación:** El contrato distingue `ACTIVE/UNKNOWN`, `INCOMPLETE` y `COMPLETED_VALID` sin convertir antigüedad o ausencia de PID en evidencia de terminación; ningún estado no verificado puede ser éxito.
 - **Prueba:** `python3 -m unittest discover -s tests -q`
 - **Rollback:** Descartar solo la especificación M0 si contradice el contrato existente; conservar recibos y ejecutar la suite baseline.
+- **Estado ejecutado:** Completado como especificación documental en `docs/SYNTHETIC_EXPERIMENT_CONTROLS.md` (sección “Crash-recovery contract (M0)”). Quedó fijado que estados no terminales son `ACTIVE_OR_UNKNOWN`, registros/artefactos incompletos son `INCOMPLETE`, y solo cinco recibos más plan, propuesta, estado terminal y manifiesto consistentes pueden ser `COMPLETED_VALID`. Edad y PID no determinan abandono; el inspector futuro será read-only y no repara, finaliza ni reanuda. No se modificó código ni evidencia de campañas.
+- **Verificación M0:** La suite pasó 78/78; los ocho manifiestos listados arriba se comprobaron antes del cambio y no se escribieron. Pendiente para M1: convertir el contrato en checkpoints y persistencia incremental.
 
 ### M1 — Diseñar checkpoints durables y manifiesto incremental
 
@@ -158,5 +161,5 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 
 ## Próximo paso
 
-- **Primer paso:** Ejecutar y archivar el baseline de IHRA y revisar el contrato de interrupción no cooperativa antes de modificar el formato de evidencia.
-- **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && git status --short --branch && python3 -m unittest discover -s tests -v`
+- **Primer paso:** Iniciar M1 definiendo el orden de persistencia del recibo, checkpoint y manifiesto por cada transición de muestra; no tocar aún la lógica de ejecución hasta fijar esos invariantes.
+- **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && python3 -m unittest tests.test_synthetic_experiment -v`

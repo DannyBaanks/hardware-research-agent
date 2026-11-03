@@ -63,6 +63,25 @@ malicious processes sharing the operator's UID. Autonomous scientific
 planning, general authorization, hardware autonomy, and durable recovery
 remain outside this result.
 
+## Crash-recovery contract (M0)
+
+The recovery design uses conservative inspection states; they describe the
+evidence found on disk and do not claim whether a campaign process is alive:
+
+| Inspection state | Evidence condition | Claim permitted |
+|---|---|---|
+| `ACTIVE_OR_UNKNOWN` | The last durable campaign record says `RUNNING`, or an observation cannot establish a terminal record. | The campaign is not demonstrated complete. The process may still be active or may have stopped; this inspection does not decide which. |
+| `INCOMPLETE` | A terminal failure/interruption is recorded, or required final state, manifest, sample receipt, or linked artifact is absent. A sample with only a `started` marker is not a completed sample. | `NOT_DEMONSTRATED`; previously validated receipts may remain useful evidence, but do not make the campaign successful. |
+| `COMPLETED_VALID` | A terminal `COMPLETED` record and `DEMONSTRATED` verdict are consistent with the fixed plan and proposal; all five ordered sample receipts pass the contract; their plan/campaign links and output digests match; and every required artifact is covered by a consistent manifest. | `DEMONSTRATED` for fixed-workload repeatability only. This does not establish authorship, human identity, or resistance to same-UID modification. |
+
+Any malformed, contradictory, unreadable, or unverifiable evidence is
+`NOT_DEMONSTRATED`, never repaired or upgraded by inspection. Missing final
+state or a missing manifest is not success. Age, timestamps, or a missing PID
+must not be used to infer that a campaign is abandoned or that its owner died.
+Inspection must not modify campaign files, finalize a `RUNNING` campaign, or
+resume/retry work. These are normative design rules; implementation and
+interruption testing are pending later milestones.
+
 ## Proposal and TTY authorization checks
 
 The current CLI accepts a versioned JSON proposal only as inert data. It
