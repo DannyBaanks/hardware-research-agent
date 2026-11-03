@@ -212,6 +212,13 @@ class _CampaignEvidence:
     def write_bytes(self, name: str, data: bytes):
         if not self.NAME_PATTERN.fullmatch(name) or name in {".", ".."}:
             raise ValueError("Invalid evidence filename")
+        self._write_atomic(name, data)
+        if name == "SHA256SUMS.txt":
+            return
+        self._digests[name] = hashlib.sha256(data).hexdigest()
+        self.write_manifest()
+
+    def _write_atomic(self, name: str, data: bytes):
         temp_name = f".tmp-{uuid.uuid4().hex}"
         fd = os.open(
             temp_name,
@@ -237,7 +244,6 @@ class _CampaignEvidence:
             except FileNotFoundError:
                 pass
             raise
-        self._digests[name] = hashlib.sha256(data).hexdigest()
 
     def write_json(self, name: str, value):
         data = json.dumps(
@@ -249,12 +255,34 @@ class _CampaignEvidence:
         ).encode("ascii") + b"\n"
         self.write_bytes(name, data)
 
+    def write_checkpoint(
+        self,
+        campaign_id: str,
+        plan_digest: str,
+        state: str,
+        current_sample: Optional[int],
+        samples_completed: int,
+    ):
+        self.write_json(
+            "checkpoint.json",
+            {
+                "schema_version": 1,
+                "campaign_id": campaign_id,
+                "plan_sha256": plan_digest,
+                "state": state,
+                "current_sample": current_sample,
+                "samples_completed": samples_completed,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
     def write_manifest(self):
         lines = [
             f"{digest}  {name}"
             for name, digest in sorted(self._digests.items())
+            if name != "SHA256SUMS.txt"
         ]
-        self.write_bytes("SHA256SUMS.txt", ("\n".join(lines) + "\n").encode("ascii"))
+        self._write_atomic("SHA256SUMS.txt", ("\n".join(lines) + "\n").encode("ascii"))
 
     def close(self):
         if self._dir_fd is not None:
@@ -459,6 +487,9 @@ class SyntheticExperimentRunner:
                 "samples_completed": 0,
             }
             store.write_json("campaign.json", campaign_record)
+            store.write_checkpoint(
+                campaign_id, plan_digest, "RUNNING", None, len(completed)
+            )
             try:
                 sandbox_binaries = self._verify_sandbox_binaries()
             except SandboxUnavailableError as exc:
@@ -478,13 +509,16 @@ class SyntheticExperimentRunner:
                     }
                 )
                 store.write_json("campaign.json", campaign_record)
-                store.write_manifest()
+                store.write_checkpoint(
+                    campaign_id, plan_digest, "TERMINAL", None, len(completed)
+                )
                 return ExperimentCampaignResult(
                     campaign_id, plan_digest, status, verdict, 0, str(store.path), reason
                 )
             campaign_record["runner"].update(sandbox_binaries)
             store.write_json("campaign.json", campaign_record)
 
+            current_sample = None
             for sample_number in range(1, plan.samples + 1):
                 if not self._plan_is_unchanged(plan, canonical_plan, plan_digest):
                     reason = "Plan changed after authorization"
@@ -519,6 +553,14 @@ class SyntheticExperimentRunner:
                         "started_at": sample_started_at,
                         "status": "RUNNING",
                     },
+                )
+                current_sample = sample_number
+                store.write_checkpoint(
+                    campaign_id,
+                    plan_digest,
+                    "SAMPLE_RUNNING",
+                    sample_number,
+                    len(completed),
                 )
                 sample_started = time.monotonic()
                 try:
@@ -610,6 +652,14 @@ class SyntheticExperimentRunner:
                     reason = "SANDBOX_BINARY_INTEGRITY_FAILURE"
                     break
                 completed.append(receipt_record)
+                store.write_checkpoint(
+                    campaign_id,
+                    plan_digest,
+                    "SAMPLE_RECORDED",
+                    sample_number,
+                    len(completed),
+                )
+                current_sample = None
             else:
                 if (
                     len(completed) == plan.samples
@@ -637,7 +687,13 @@ class SyntheticExperimentRunner:
                 }
             )
             store.write_json("campaign.json", campaign_record)
-            store.write_manifest()
+            store.write_checkpoint(
+                campaign_id,
+                plan_digest,
+                "TERMINAL",
+                None if status == "COMPLETED" else current_sample,
+                len(completed),
+            )
             return ExperimentCampaignResult(
                 campaign_id,
                 plan_digest,

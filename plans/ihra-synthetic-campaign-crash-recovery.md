@@ -59,7 +59,7 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 - **Prueba:** `python3 -m unittest discover -s tests -q`
 - **Rollback:** Descartar solo la especificación M0 si contradice el contrato existente; conservar recibos y ejecutar la suite baseline.
 - **Estado ejecutado:** Completado como especificación documental en `docs/SYNTHETIC_EXPERIMENT_CONTROLS.md` (sección “Crash-recovery contract (M0)”). Quedó fijado que estados no terminales son `ACTIVE_OR_UNKNOWN`, registros/artefactos incompletos son `INCOMPLETE`, y solo cinco recibos más plan, propuesta, estado terminal y manifiesto consistentes pueden ser `COMPLETED_VALID`. Edad y PID no determinan abandono; el inspector futuro será read-only y no repara, finaliza ni reanuda. No se modificó código ni evidencia de campañas.
-- **Verificación M0:** La suite pasó 78/78; los ocho manifiestos listados arriba se comprobaron antes del cambio y no se escribieron. Pendiente para M1: convertir el contrato en checkpoints y persistencia incremental.
+- **Verificación M0:** La suite pasó 78/78; los ocho manifiestos listados arriba se comprobaron antes del cambio y no se escribieron. M1 convierte ese contrato en checkpoints y persistencia incremental.
 
 ### M1 — Diseñar checkpoints durables y manifiesto incremental
 
@@ -74,6 +74,8 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 - **Aceptación:** Cortes simulados antes y después de cada transición conservan los recibos anteriores, no producen manifiestos autorreferenciales ni permiten clasificar como completada una muestra sin recibo durable.
 - **Prueba:** `python3 -m unittest tests.test_campaign_recovery tests.test_synthetic_experiment -v`
 - **Rollback:** Revertir únicamente el cambio de protocolo y nuevos tests; mantener el formato histórico de evidencia legible y no reescribir campañas existentes.
+- **Estado ejecutado:** Implementados manifiestos incrementales no autorreferenciales y `checkpoint.json` atómico para `RUNNING`, `SAMPLE_RUNNING`, `SAMPLE_RECORDED` y `TERMINAL`. Cada archivo durable actualiza el manifiesto; antes de cada dispatch se confirman el marcador `started` y checkpoint de muestra activa, y el checkpoint solo suma la muestra después de persistir y validar su recibo. Un fallo simulado actualizando manifiesto conserva los artefactos anteriores y no los promociona como checkpoint verificado.
+- **Verificación M1:** `python3 -m unittest tests.test_synthetic_experiment -v` → 21 tests OK; `python3 -m unittest discover -s tests -v` → 81 tests OK; `compileall` y `git diff --check` pasan. La prueba completa revalida cada entrada del manifiesto final y confirma que no se incluye a sí mismo. Son pruebas unitarias de orden/fallo de escritura, no evidencia aún de `SIGKILL` del proceso real; eso queda para M3–M4.
 
 ### M2 — Añadir inspección offline, read-only y fail-closed
 
@@ -161,5 +163,5 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 
 ## Próximo paso
 
-- **Primer paso:** Iniciar M1 definiendo el orden de persistencia del recibo, checkpoint y manifiesto por cada transición de muestra; no tocar aún la lógica de ejecución hasta fijar esos invariantes.
+- **Primer paso:** Iniciar M2 diseñando el lector read-only para las campañas nuevas con checkpoint y las históricas sin checkpoint, sin ejecutar executor ni reparar evidencia.
 - **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && python3 -m unittest tests.test_synthetic_experiment -v`

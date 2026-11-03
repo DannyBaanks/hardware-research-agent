@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core.experiment import (
+    _CampaignEvidence,
     PlanValidationError,
     SyntheticExperimentPlan,
     SyntheticExperimentRunner,
@@ -129,6 +130,59 @@ class TestSyntheticExperimentRunner(unittest.TestCase):
         os.chmod(self.temp_path, 0o700)
         self.evidence_base = self.temp_path / "xdg" / "ihra" / "synthetic-experiments"
         self.plan = SyntheticExperimentPlan.fixed_repeatability_plan()
+
+    def test_manifest_is_incremental_and_never_hashes_itself(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        store = _CampaignEvidence(
+            self.evidence_base, "campaign-manifest-test", repository_root
+        )
+        self.addCleanup(store.close)
+
+        store.write_bytes("plan.json", b'{"plan":1}\n')
+        first_manifest = (store.path / "SHA256SUMS.txt").read_text()
+        self.assertIn("  plan.json", first_manifest)
+        self.assertNotIn("SHA256SUMS.txt", first_manifest)
+
+        store.write_bytes("proposal.json", b'{"proposal":1}\n')
+        second_manifest = (store.path / "SHA256SUMS.txt").read_text()
+        self.assertIn("  plan.json", second_manifest)
+        self.assertIn("  proposal.json", second_manifest)
+        self.assertNotIn("SHA256SUMS.txt", second_manifest)
+        self.assertNotIn(hashlib.sha256(first_manifest.encode()).hexdigest(), second_manifest)
+
+    def test_manifest_failure_preserves_prior_artifacts_without_claiming_checkpoint(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        store = _CampaignEvidence(
+            self.evidence_base, "campaign-manifest-failure-test", repository_root
+        )
+        self.addCleanup(store.close)
+        store.write_bytes("sample-01.receipt.json", b'{"validation":"PASS"}\n')
+        previous_manifest = (store.path / "SHA256SUMS.txt").read_bytes()
+
+        write_atomic = store._write_atomic
+
+        def fail_manifest_update(name, data):
+            if name == "SHA256SUMS.txt":
+                raise OSError("injected manifest update failure")
+            return write_atomic(name, data)
+
+        with patch.object(store, "_write_atomic", side_effect=fail_manifest_update):
+            with self.assertRaisesRegex(OSError, "manifest update failure"):
+                store.write_checkpoint(
+                    "campaign-manifest-failure-test",
+                    self.plan.sha256,
+                    "SAMPLE_RECORDED",
+                    1,
+                    1,
+                )
+
+        current_manifest = (store.path / "SHA256SUMS.txt").read_bytes()
+        self.assertEqual(current_manifest, previous_manifest)
+        receipt = store.path / "sample-01.receipt.json"
+        receipt_digest = hashlib.sha256(receipt.read_bytes()).hexdigest()
+        self.assertIn(f"{receipt_digest}  sample-01.receipt.json", current_manifest.decode())
+        self.assertTrue((store.path / "checkpoint.json").is_file())
+        self.assertNotIn("checkpoint.json", current_manifest.decode())
 
     def _receipt(self, **overrides):
         fields = {
@@ -283,6 +337,10 @@ class TestSyntheticExperimentRunner(unittest.TestCase):
         )
         self.assertFalse(campaign["performance_claim"])
         manifest = (evidence / "SHA256SUMS.txt").read_text().splitlines()
+        checkpoint = json.loads((evidence / "checkpoint.json").read_text())
+        self.assertEqual(checkpoint["state"], "TERMINAL")
+        self.assertEqual(checkpoint["samples_completed"], 5)
+        self.assertIsNone(checkpoint["current_sample"])
         self.assertEqual(
             hashlib.sha256((evidence / "plan.json").read_bytes()).hexdigest(),
             result.plan_sha256,
@@ -295,7 +353,43 @@ class TestSyntheticExperimentRunner(unittest.TestCase):
             f"{hashlib.sha256((evidence / 'plan.json').read_bytes()).hexdigest()}  plan.json",
             manifest,
         )
+        self.assertNotIn("SHA256SUMS.txt", "\n".join(manifest))
+        self.assertIn("  checkpoint.json", "\n".join(manifest))
         self.assertEqual(len([line for line in manifest if "sample-" in line]), 10)
+        manifest_entries = {}
+        for line in manifest:
+            digest, name = line.split("  ", 1)
+            manifest_entries[name] = digest
+        expected_files = {
+            path.name for path in evidence.iterdir() if path.name != "SHA256SUMS.txt"
+        }
+        self.assertEqual(set(manifest_entries), expected_files)
+        for name, digest in manifest_entries.items():
+            self.assertEqual(
+                hashlib.sha256((evidence / name).read_bytes()).hexdigest(), digest
+            )
+
+    def test_running_checkpoint_is_durable_before_executor_dispatch(self):
+        observed = []
+
+        def verify_checkpoint_before_dispatch(_workload_id):
+            campaign_dir = next(self.evidence_base.iterdir())
+            checkpoint = json.loads((campaign_dir / "checkpoint.json").read_text())
+            manifest = (campaign_dir / "SHA256SUMS.txt").read_text()
+            self.assertEqual(checkpoint["state"], "SAMPLE_RUNNING")
+            self.assertEqual(checkpoint["current_sample"], 1)
+            self.assertEqual(checkpoint["samples_completed"], 0)
+            self.assertIn("  sample-01.started.json", manifest)
+            self.assertIn("  checkpoint.json", manifest)
+            observed.append(True)
+            return self._receipt()
+
+        executor = FakeExecutor(
+            [verify_checkpoint_before_dispatch] + [self._receipt() for _ in range(4)]
+        )
+        result = self._run(executor)
+        self.assertEqual(result.status, "COMPLETED")
+        self.assertEqual(observed, [True])
 
     def test_authorization_must_match_exact_plan_digest(self):
         executor = FakeExecutor([self._receipt() for _ in range(5)])

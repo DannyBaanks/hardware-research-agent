@@ -79,8 +79,10 @@ Any malformed, contradictory, unreadable, or unverifiable evidence is
 state or a missing manifest is not success. Age, timestamps, or a missing PID
 must not be used to infer that a campaign is abandoned or that its owner died.
 Inspection must not modify campaign files, finalize a `RUNNING` campaign, or
-resume/retry work. These are normative design rules; implementation and
-interruption testing are pending later milestones.
+resume/retry work. The writer now emits atomic campaign checkpoints and
+incrementally refreshed manifests; implementation of the read-only inspector
+and abrupt process-kill testing are pending later milestones. Unit tests do
+not demonstrate abrupt process-kill behavior.
 
 ## Proposal and TTY authorization checks
 
