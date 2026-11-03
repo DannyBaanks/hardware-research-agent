@@ -117,8 +117,40 @@ read without modification. Their hashes/receipts remained inspectable, but
 they were conservatively classified `NOT_DEMONSTRATED` because the historical
 artifacts do not satisfy the current proposal/checkpoint linkage (and one
 records a runner outside the current pin). No historical evidence was
-rewritten. M3 will add simulated cuts between persistence transitions; M4
-remains responsible for a real isolated process-interruption test.
+rewritten. M3's simulated persistence-cut results follow; M4 remains responsible
+for a real isolated process-interruption test.
+
+### M3 simulated persistence-cut verification
+
+The M3 harness injects a test-only `BaseException` at 12 writer boundaries:
+before the sample-start write; after its replacement but before the manifest;
+after the start marker but before the `SAMPLE_RUNNING` checkpoint; during
+executor dispatch after that checkpoint; after executor return but before the
+receipt write; after receipt replacement but before its manifest update;
+before and after the `SAMPLE_RECORDED` checkpoint; before the terminal campaign
+record write; after that record's replacement but before its manifest update;
+after terminal-checkpoint replacement but before its manifest update; and
+after the terminal checkpoint and manifest are written. It then invokes the
+disk-only inspector twice as a fresh read operation.
+For every case, the classification is deterministic and neither file content,
+permissions, modification times, nor directory modification time change.
+Receipts already written remain present; any receipt covered by the manifest
+retains its matching digest. A leftover atomic-write temporary is separately
+verified to remain `INCOMPLETE` and unchanged by inspection.
+
+The campaign remains `ACTIVE_OR_UNKNOWN` when the last durable campaign record
+is still `RUNNING`; a replaced terminal record or checkpoint with a stale
+manifest is `INCOMPLETE`. If the terminal checkpoint **and its manifest** were
+already durably written before the injected stop, the inspector returns
+`COMPLETED_VALID`: at that point all completion evidence is present and
+verified, even though the runner did not return to its caller. These are
+simulated in-process exception cuts, not parent-process termination, storage
+failure, or proof of `SIGKILL` handling.
+
+Verification on 2026-11-03: the focused recovery suite passed 19 tests and the
+full suite passed 100 tests; `python3 -m compileall -q core tests` and
+`git diff --check` passed. No live campaign or system process was interrupted.
+Real Linux/Bubblewrap parent termination remains M4 and `NOT_DEMONSTRATED`.
 
 ## Proposal and TTY authorization checks
 

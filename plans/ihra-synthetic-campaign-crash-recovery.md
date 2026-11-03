@@ -105,6 +105,8 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 - **Aceptación:** Cada punto de corte produce una clasificación conservadora y preserva todos los artefactos ya confirmados; una única anomalía invalida el estado exitoso.
 - **Prueba:** `python3 -m unittest tests.test_campaign_recovery -v`
 - **Rollback:** Retirar solamente los escenarios de inyección que no correspondan al protocolo final; mantener controles que revelen falsos éxitos.
+- **Estado ejecutado:** Añadida una matriz de 12 cortes simulados desde antes del marcador `started` hasta después de persistir el checkpoint terminal y su manifiesto. Cada corte reconstruye la inspección desde el directorio en disco; inspecciones repetidas son deterministas y no cambian contenido, permisos ni mtimes. Los recibos ya escritos se preservan y sus digests siguen coincidiendo si ya estaban cubiertos por el manifiesto. Se verifica aparte que un temporal atómico huérfano produce `INCOMPLETE`. Cuando el registro durable continúa `RUNNING`, el resultado es `ACTIVE_OR_UNKNOWN`; si terminal/checkpoint cambió pero el manifiesto quedó obsoleto, `INCOMPLETE`. Si registro terminal, checkpoint y manifiesto ya quedaron persistidos antes del corte, el inspector da `COMPLETED_VALID`, aun si el runner no alcanzó a retornar.
+- **Verificación M3:** `python3 -m unittest tests.test_campaign_recovery -v` → 19 tests OK; suite completa → 100 tests OK; `python3 -m compileall -q core tests` y `git diff --check` pasan. Son cortes in-process mediante excepción de harness, no terminación real del padre ni `SIGKILL`; no se interrumpió ningún workload ni proceso de sistema. Recuperación ante terminación Linux/Bubblewrap queda para M4 y continúa `NOT_DEMONSTRATED`.
 
 ### M4 — Probar interrupción de proceso real bajo Linux/Bubblewrap
 
@@ -165,5 +167,5 @@ Hacer que una campaña sintética interrumpida abruptamente conserve checkpoints
 
 ## Próximo paso
 
-- **Primer paso:** Iniciar M3 inyectando fallos en cada frontera de persistencia y reconstruir el inspector únicamente desde la evidencia en disco, sin reanudar ni mutar la campaña.
+- **Primer paso:** Preparar M4 como una prueba Linux/Bubblewrap aislada, identificando solo los PID de harness y comprobando descendants, recibos y clasificación read-only tras la terminación controlada.
 - **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && python3 -m unittest tests.test_campaign_recovery -v`

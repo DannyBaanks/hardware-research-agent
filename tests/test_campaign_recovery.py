@@ -7,13 +7,22 @@ from contextlib import redirect_stdout
 from io import StringIO
 from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core.cli import cmd_inspect_synthetic_campaign
-from core.experiment import SyntheticExperimentPlan
-from core.executor import SyntheticWorkloadExecutor
+from core.experiment import (
+    _CampaignEvidence,
+    SyntheticExperimentPlan,
+    SyntheticExperimentRunner,
+)
+from core.executor import SyntheticWorkloadExecutor, WorkloadReceipt
 from core.planning import SyntheticExperimentProposal
 from core.recovery import inspect_synthetic_campaign
+from tests.tty_test_utils import authorize_in_pty
+
+
+class _SimulatedAbruptStop(BaseException):
+    pass
 
 
 class TestCampaignRecoveryInspection(unittest.TestCase):
@@ -147,6 +156,286 @@ class TestCampaignRecoveryInspection(unittest.TestCase):
             lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")
         manifest_path.write_text("\n".join(lines) + "\n", encoding="ascii")
         manifest_path.chmod(0o600)
+
+    def _run_until_simulated_cut(self, cut):
+        campaign_id = f"{cut['id']:032x}"
+        evidence_base = (
+            self.root / f"m3-cut-{cut['id']}" / "state" / "ihra" / "synthetic-experiments"
+        )
+        plan = SyntheticExperimentPlan.fixed_repeatability_plan()
+        proposal = SyntheticExperimentProposal(
+            schema_version=1,
+            proposal_id="test-m3-cut",
+            rationale="Exercise recovery inspection after a simulated persistence cut.",
+            plan=plan,
+        )
+        executor_calls = []
+
+        class FakeExecutor:
+            runner_path = Path(__file__).resolve().parents[1] / "core" / "workload_runner.py"
+
+            def _sandbox_binaries(self):
+                raise AssertionError("Campaign tests replace sandbox binary verification")
+
+            def run(inner_self, workload_id):
+                executor_calls.append(workload_id)
+                if cut["point"] == "during-executor":
+                    raise _SimulatedAbruptStop()
+                return WorkloadReceipt(
+                    workload_id=plan.workload_id,
+                    status="COMPLETED",
+                    output_sha256=plan.expected_result_digest,
+                    elapsed_seconds=0.02,
+                    sandbox="bubblewrap-rootless",
+                    hardware_telemetry_reads=0,
+                    device_control_operations=0,
+                    persistent_host_state_changed=False,
+                    sandboxed_processes_started=1,
+                    reason="fixed workload completed",
+                    runner_sha256=plan.runner_digest,
+                    process_exit_code=0,
+                )
+
+        runner = SyntheticExperimentRunner(
+            executor=FakeExecutor(),
+            evidence_base=evidence_base,
+            repository_root=Path(__file__).resolve().parents[1],
+        )
+        runner._verify_sandbox_binaries = Mock(
+            return_value={
+                "bubblewrap_path": "/usr/bin/bwrap",
+                "bubblewrap_sha256": "a" * 64,
+                "python_path": "/usr/bin/python3",
+                "python_sha256": "b" * 64,
+            }
+        )
+        authorization = authorize_in_pty(
+            plan.sha256,
+            proposal.sha256,
+            proposal.canonical_bytes().decode("ascii"),
+        )
+        write_atomic = _CampaignEvidence._write_atomic
+        write_checkpoint = _CampaignEvidence.write_checkpoint
+        write_json = _CampaignEvidence.write_json
+
+        def inject_atomic(store, name, data):
+            point = cut["point"]
+            if point == "before-start-marker" and name == "sample-01.started.json":
+                raise _SimulatedAbruptStop()
+            write_atomic(store, name, data)
+            if point == "after-start-replace-before-manifest" and name == "sample-01.started.json":
+                raise _SimulatedAbruptStop()
+            if point == "after-receipt-replace-before-manifest" and name == "sample-01.receipt.json":
+                raise _SimulatedAbruptStop()
+            if point == "after-campaign-replace-before-manifest" and name == "campaign.json":
+                campaign = json.loads(data)
+                if campaign.get("status") == "COMPLETED":
+                    raise _SimulatedAbruptStop()
+            if point == "after-terminal-checkpoint-replace-before-manifest" and name == "checkpoint.json":
+                checkpoint = json.loads(data)
+                if checkpoint.get("state") == "TERMINAL":
+                    raise _SimulatedAbruptStop()
+
+        def inject_checkpoint(store, *args, **kwargs):
+            state = args[2]
+            if (
+                cut["point"] == "after-start-before-running-checkpoint"
+                and state == "SAMPLE_RUNNING"
+            ):
+                raise _SimulatedAbruptStop()
+            if (
+                cut["point"] == "before-recorded-checkpoint"
+                and state == "SAMPLE_RECORDED"
+            ):
+                raise _SimulatedAbruptStop()
+            result = write_checkpoint(store, *args, **kwargs)
+            if (
+                cut["point"] == "after-recorded-checkpoint"
+                and state == "SAMPLE_RECORDED"
+            ):
+                raise _SimulatedAbruptStop()
+            if cut["point"] == "after-terminal-checkpoint" and state == "TERMINAL":
+                raise _SimulatedAbruptStop()
+            return result
+
+        def inject_json(store, name, value):
+            if (
+                cut["point"] == "after-executor-before-receipt"
+                and name == "sample-01.receipt.json"
+            ):
+                raise _SimulatedAbruptStop()
+            if (
+                cut["point"] == "before-campaign-complete-record"
+                and name == "campaign.json"
+                and value.get("status") == "COMPLETED"
+            ):
+                raise _SimulatedAbruptStop()
+            return write_json(store, name, value)
+
+        with (
+            patch.object(_CampaignEvidence, "_write_atomic", inject_atomic),
+            patch.object(_CampaignEvidence, "write_checkpoint", inject_checkpoint),
+            patch.object(_CampaignEvidence, "write_json", inject_json),
+            patch("core.experiment.uuid.uuid4", return_value=SimpleNamespace(hex=campaign_id)),
+        ):
+            with self.assertRaises(_SimulatedAbruptStop):
+                runner.run(
+                    plan,
+                    authorization=authorization,
+                    proposal_bytes=proposal.canonical_bytes(),
+                )
+
+        campaign_dir = evidence_base / campaign_id
+        self.assertTrue(campaign_dir.is_dir())
+        self.assertEqual(len(executor_calls), cut["executor_calls"])
+        return campaign_id, evidence_base, campaign_dir
+
+    @staticmethod
+    def _evidence_snapshot(campaign_dir):
+        files = {
+            path.name: (
+                path.read_bytes(),
+                path.stat().st_mode,
+                path.stat().st_mtime_ns,
+            )
+            for path in campaign_dir.iterdir()
+        }
+        return files, campaign_dir.stat().st_mtime_ns
+
+    def test_simulated_persistence_cuts_reinspect_conservatively_without_mutation(self):
+        cuts = [
+            {
+                "id": 1,
+                "point": "before-start-marker",
+                "executor_calls": 0,
+                "receipts": 0,
+                "status": "ACTIVE_OR_UNKNOWN",
+            },
+            {
+                "id": 2,
+                "point": "after-start-replace-before-manifest",
+                "executor_calls": 0,
+                "receipts": 0,
+                "status": "ACTIVE_OR_UNKNOWN",
+            },
+            {
+                "id": 3,
+                "point": "after-start-before-running-checkpoint",
+                "executor_calls": 0,
+                "receipts": 0,
+                "status": "ACTIVE_OR_UNKNOWN",
+            },
+            {
+                "id": 4,
+                "point": "during-executor",
+                "executor_calls": 1,
+                "receipts": 0,
+                "status": "ACTIVE_OR_UNKNOWN",
+            },
+            {
+                "id": 5,
+                "point": "after-executor-before-receipt",
+                "executor_calls": 1,
+                "receipts": 0,
+                "status": "ACTIVE_OR_UNKNOWN",
+            },
+            {
+                "id": 6,
+                "point": "after-receipt-replace-before-manifest",
+                "executor_calls": 1,
+                "receipts": 1,
+                "status": "ACTIVE_OR_UNKNOWN",
+            },
+            {
+                "id": 7,
+                "point": "before-recorded-checkpoint",
+                "executor_calls": 1,
+                "receipts": 1,
+                "status": "ACTIVE_OR_UNKNOWN",
+            },
+            {
+                "id": 8,
+                "point": "after-recorded-checkpoint",
+                "executor_calls": 1,
+                "receipts": 1,
+                "status": "ACTIVE_OR_UNKNOWN",
+            },
+            {
+                "id": 9,
+                "point": "before-campaign-complete-record",
+                "executor_calls": 5,
+                "receipts": 5,
+                "status": "ACTIVE_OR_UNKNOWN",
+            },
+            {
+                "id": 10,
+                "point": "after-campaign-replace-before-manifest",
+                "executor_calls": 5,
+                "receipts": 5,
+                "status": "INCOMPLETE",
+            },
+            {
+                "id": 11,
+                "point": "after-terminal-checkpoint-replace-before-manifest",
+                "executor_calls": 5,
+                "receipts": 5,
+                "status": "INCOMPLETE",
+            },
+            {
+                "id": 12,
+                "point": "after-terminal-checkpoint",
+                "executor_calls": 5,
+                "receipts": 5,
+                "status": "COMPLETED_VALID",
+            },
+        ]
+        for cut in cuts:
+            with self.subTest(point=cut["point"]):
+                campaign_id, evidence_base, campaign_dir = self._run_until_simulated_cut(cut)
+                before = self._evidence_snapshot(campaign_dir)
+
+                first = inspect_synthetic_campaign(campaign_id, evidence_base)
+                second = inspect_synthetic_campaign(campaign_id, evidence_base)
+
+                self.assertEqual(first.inspection_status, cut["status"])
+                self.assertEqual(first.verdict == "DEMONSTRATED", cut["status"] == "COMPLETED_VALID")
+                self.assertEqual(second.to_dict(), first.to_dict())
+                self.assertEqual(self._evidence_snapshot(campaign_dir), before)
+                files = before[0]
+                receipt_names = sorted(
+                    name for name in files if name.endswith(".receipt.json")
+                )
+                self.assertEqual(len(receipt_names), cut["receipts"])
+                manifest = files["SHA256SUMS.txt"][0].decode("ascii")
+                manifest_entries = {
+                    line.split("  ", 1)[1]: line.split("  ", 1)[0]
+                    for line in manifest.splitlines()
+                }
+                for name in receipt_names:
+                    if name in manifest_entries:
+                        self.assertEqual(
+                            hashlib.sha256(files[name][0]).hexdigest(),
+                            manifest_entries[name],
+                        )
+                if cut["point"] == "after-receipt-replace-before-manifest":
+                    self.assertNotIn("sample-01.receipt.json", manifest_entries)
+                if cut["status"] != "COMPLETED_VALID":
+                    self.assertNotEqual(first.verdict, "DEMONSTRATED")
+
+    def test_orphan_atomic_temporary_is_incomplete_and_inspection_is_non_mutating(self):
+        temporary = self.campaign_dir / ".tmp-abrupt-cut"
+        temporary.write_bytes(b"partial atomic write")
+        temporary.chmod(0o600)
+        before = self._evidence_snapshot(self.campaign_dir)
+
+        first = inspect_synthetic_campaign(self.campaign_id, self.evidence_base)
+        second = inspect_synthetic_campaign(self.campaign_id, self.evidence_base)
+
+        self.assertEqual(first.inspection_status, "INCOMPLETE")
+        self.assertEqual(first.verdict, "NOT_DEMONSTRATED")
+        self.assertTrue(any("temporary file remains" in issue for issue in first.issues))
+        self.assertEqual(second.to_dict(), first.to_dict())
+        self.assertEqual(self._evidence_snapshot(self.campaign_dir), before)
 
     def test_completed_campaign_is_valid_and_read_only(self):
         before = {
