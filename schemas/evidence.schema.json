@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HardwareEvidenceBundle",
+  "description": "Cryptographically hashed manifest and execution records for a hardware experiment.",
+  "type": "object",
+  "required": [
+    "bundle_id",
+    "experiment_id",
+    "timestamp_utc",
+    "verdict",
+    "runs",
+    "artifacts_sha256"
+  ],
+  "properties": {
+    "bundle_id": {
+      "type": "string"
+    },
+    "experiment_id": {
+      "type": "string"
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "DEMONSTRATED",
+        "INFERRED",
+        "REFUTED",
+        "NOT_DEMONSTRATED",
+        "NO_SAFE_GAIN_FOUND",
+        "DENIED",
+        "RESOURCE_PRESSURE_ABORT",
+        "CALCULATION_CORRUPT"
+      ]
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["run_index", "profile", "repetition", "elapsed_sec", "output_sha256"],
+        "properties": {
+          "run_index": { "type": "integer" },
+          "profile": { "type": "string" },
+          "repetition": { "type": "integer" },
+          "elapsed_sec": { "type": "number" },
+          "throughput": { "type": "number" },
+          "clock_mhz": { "type": "number" },
+          "temp_c": { "type": "number" },
+          "output_sha256": { "type": "string" }
+        }
+      }
+    },
+    "artifacts_sha256": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "baseline_runs": [
+    { "run_index": 1, "throughput": 25.32, "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+    { "run_index": 2, "throughput": 25.31, "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+    { "run_index": 3, "throughput": 25.33, "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
+  ],
+  "intervention_runs": [
+    { "run_index": 4, "throughput": 25.35, "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+    { "run_index": 5, "throughput": 25.32, "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+    { "run_index": 6, "throughput": 25.34, "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
+  ],
+  "negative_control_delta": 0.001
+}

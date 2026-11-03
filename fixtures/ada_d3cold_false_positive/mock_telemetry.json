@@ -1,0 +1,7 @@
+{
+  "scenario": "ada_d3cold_false_positive",
+  "software_getter_unlocked": true,
+  "reported_rate": "0 0 0",
+  "driver_message": "RM getter reports full rate on 0x20801230",
+  "power_state_history": ["D0", "D3cold", "D0"]
+}

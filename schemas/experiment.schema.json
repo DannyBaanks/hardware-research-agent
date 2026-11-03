@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HardwareExperimentPlan",
+  "description": "Defines an authorized, reproducible hardware research experiment plan with explicit controls and rollback.",
+  "type": "object",
+  "required": [
+    "experiment_id",
+    "target_hardware",
+    "hypothesis_id",
+    "risk_tier",
+    "primary_variable",
+    "workload",
+    "controls",
+    "rollback_plan"
+  ],
+  "properties": {
+    "experiment_id": {
+      "type": "string",
+      "pattern": "^[A-Z0-9_-]+$"
+    },
+    "hypothesis_id": {
+      "type": "string"
+    },
+    "target_hardware": {
+      "type": "object",
+      "required": ["pci_id", "device_family"],
+      "properties": {
+        "pci_id": { "type": "string" },
+        "subsystem_id": { "type": "string" },
+        "device_family": { "type": "string" }
+      }
+    },
+    "risk_tier": {
+      "type": "integer",
+      "enum": [0, 1, 2, 3]
+    },
+    "primary_variable": {
+      "type": "string"
+    },
+    "predicted_delta": {
+      "type": "string"
+    },
+    "workload": {
+      "type": "object",
+      "required": ["command", "repetitions", "timeout_sec"],
+      "properties": {
+        "command": { "type": "string" },
+        "repetitions": { "type": "integer", "minimum": 3 },
+        "timeout_sec": { "type": "number", "minimum": 1 }
+      }
+    },
+    "controls": {
+      "type": "object",
+      "required": ["negative_control", "sequence_pattern", "output_hash_check"],
+      "properties": {
+        "negative_control": { "type": "string" },
+        "sequence_pattern": { "type": "string", "enum": ["counterbalanced_alternating", "single_group"] },
+        "output_hash_check": { "type": "boolean" }
+      }
+    },
+    "rollback_plan": {
+      "type": "object",
+      "required": ["restoration_command", "verification_query", "expected_restored_state"],
+      "properties": {
+        "restoration_command": { "type": "string" },
+        "verification_query": { "type": "string" },
+        "expected_restored_state": { "type": "string" }
+      }
+    }
+  }
+}
