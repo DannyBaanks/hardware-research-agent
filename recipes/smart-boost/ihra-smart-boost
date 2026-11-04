@@ -3,21 +3,36 @@
 # Why: on the reference laptop boost gave +16% single-thread / +8-9% all-core on AC, but ~0%
 # all-core on battery at +40-60% energy per operation (docs/HISTORY_REA_CPU_01.md).
 # Supports cpufreq/boost (AMD, generic) and intel_pstate/no_turbo. SYSFS_ROOT is for tests.
+# POSIX-sh mirror of boost_switch()/on_ac_power() in core/cpu_power.py (it runs from
+# /usr/local/sbin without the repo); tests/test_cpu_boost_tools.py keeps the two in parity.
 R="${SYSFS_ROOT:-}"
-if [ -e "$R/sys/devices/system/cpu/cpufreq/boost" ]; then
+log() { logger -t ihra-smart-boost "$*" 2>/dev/null; }
+is01() { v=$(cat "$1" 2>/dev/null); [ "$v" = 0 ] || [ "$v" = 1 ]; }
+if is01 "$R/sys/devices/system/cpu/cpufreq/boost"; then
   KNOB="$R/sys/devices/system/cpu/cpufreq/boost"; ON=1; OFF=0
-elif [ -e "$R/sys/devices/system/cpu/intel_pstate/no_turbo" ]; then
+elif is01 "$R/sys/devices/system/cpu/intel_pstate/no_turbo"; then
   KNOB="$R/sys/devices/system/cpu/intel_pstate/no_turbo"; ON=0; OFF=1
 else
-  logger -t ihra-smart-boost "no CPU boost switch found" 2>/dev/null; exit 0
+  exit 0  # no boost switch: nothing to do
 fi
-[ -w "$KNOB" ] || { logger -t ihra-smart-boost "boost switch not writable: $KNOB" 2>/dev/null; exit 0; }
-charger=0
+# Power source. Device-scope batteries (wireless mice, controllers) say nothing about the computer.
+external=0; ac=0; battery=0; discharging=0
 for ps in "$R"/sys/class/power_supply/*; do
-  [ -r "$ps/type" ] && [ -r "$ps/online" ] || continue
-  case "$(cat "$ps/type")" in Mains|USB|USB_PD|USB_C) [ "$(cat "$ps/online")" = 1 ] && charger=1 ;; esac
+  [ -r "$ps/type" ] || continue
+  [ "$(cat "$ps/scope" 2>/dev/null)" = Device ] && continue
+  case "$(cat "$ps/type")" in
+    Mains|USB|USB_PD|USB_C) external=1; [ "$(cat "$ps/online" 2>/dev/null)" = 1 ] && ac=1 ;;
+    Battery) battery=1; [ "$(cat "$ps/status" 2>/dev/null)" = Discharging ] && discharging=1 ;;
+  esac
 done
-if [ "$charger" = 1 ]; then want=$ON; else want=$OFF; fi
-[ "$(cat "$KNOB")" = "$want" ] || echo "$want" > "$KNOB"
-logger -t ihra-smart-boost "charger=$charger $(basename "$KNOB")=$(cat "$KNOB")" 2>/dev/null
+if [ "$ac" = 1 ]; then src=ac
+elif [ "$external" = 1 ]; then src=battery
+elif [ "$battery" = 1 ]; then if [ "$discharging" = 1 ]; then src=battery; else src=ac; fi
+else exit 0  # desktop / no power info: leave boost exactly as it is
+fi
+if [ "$src" = ac ]; then want=$ON; else want=$OFF; fi
+[ "$(cat "$KNOB")" = "$want" ] && exit 0  # already right: no write, no log line
+if [ ! -w "$KNOB" ]; then log "boost switch not writable: $KNOB"; exit 0; fi
+echo "$want" > "$KNOB"
+log "power=$src set $(basename "$KNOB")=$(cat "$KNOB")"
 exit 0

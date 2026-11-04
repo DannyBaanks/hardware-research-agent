@@ -15,6 +15,13 @@ vector math, memory bandwidth, package watts (if your kernel exposes RAPL), peak
 Every result has a hash: if a hash changes between boost on/off the run is invalid (the CPU computed
 something different). It refuses to start on battery and stops if the charger is unplugged.
 
+**It must be the only thing touching boost while it runs.** It reads the switch back before and after
+every job and stops if anything else flipped it (tlp, auto-cpufreq, the [smart-boost recipe](../../recipes/smart-boost/README.md)…):
+a run labelled "boost off" that really ran with turbo on would hide the gain. If it finds such a tool
+installed it refuses to start; stop that tool for the run, or pass `--allow-other-owner` (the readback
+still guards every job). The switch is restored on Ctrl+C, `kill`, and when the terminal or SSH
+session closes. A benchmark that crashes is reported as FAILED and the rest of the matrix continues.
+
 Results land in `~/.local/state/ihra/cpu-boost/matrix_<time>.jsonl`; give that file to your agent.
 
 **Reference result** (HP Victus, Ryzen 5 8645HS, on AC): +16% single-thread, +8-9% all-core,

@@ -1,2 +1,5 @@
 # Re-evaluate CPU boost whenever a charger is plugged/unplugged (see /usr/local/sbin/ihra-smart-boost).
-SUBSYSTEM=="power_supply", ACTION=="add|change", RUN+="/usr/local/sbin/ihra-smart-boost"
+# Only the computer's own supplies: chargers, plus system batteries (for laptops that expose no
+# charger entry). Wireless mice/controllers report scope=Device and are skipped, so their battery
+# updates do not wake the script. The script itself logs only when it actually flips the switch.
+SUBSYSTEM=="power_supply", ACTION=="add|change", ATTR{scope}!="Device", ATTR{type}=="Mains|USB|USB_PD|USB_C|Battery", RUN+="/usr/local/sbin/ihra-smart-boost"

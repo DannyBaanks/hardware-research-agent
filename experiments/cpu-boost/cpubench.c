@@ -13,8 +13,12 @@ static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);retu
 static uint64_t fnv(uint64_t h,const void*p,size_t n){const uint8_t*b=p;for(size_t i=0;i<n;i++){h^=b[i];h*=1099511628211ULL;}return h;}
 int main(int argc,char**argv){
   if(argc<3){fprintf(stderr,"usage\n");return 2;}
-  const char*mode=argv[1]; int T=atoi(argv[2]); omp_set_num_threads(T);
-  uint64_t res[64]={0}; double ops=0,t0,t1;
+  const char*mode=argv[1]; int T=atoi(argv[2]);
+  if(T<1||T>65536){fprintf(stderr,"threads must be 1..65536\n");return 2;}
+  omp_set_num_threads(T);
+  uint64_t*res=calloc((size_t)T,sizeof *res); // one slot per thread, sized at runtime (no 64-thread limit)
+  if(!res){fprintf(stderr,"out of memory\n");return 2;}
+  double ops=0,t0,t1;
   if(!strcmp(mode,"int")){
     const uint64_t N=1000000000ULL; ops=(double)N*T; t0=now();
     #pragma omp parallel

@@ -29,6 +29,111 @@ def _int(value: Optional[str]) -> Optional[int]:
         return None
 
 
+# (control path, value meaning "boost on", value meaning "boost off"). Intel's knob is inverted.
+BOOST_SWITCHES = (
+    ("/sys/devices/system/cpu/cpufreq/boost", "1", "0"),
+    ("/sys/devices/system/cpu/intel_pstate/no_turbo", "0", "1"),
+)
+EXTERNAL_SUPPLY_TYPES = ("Mains", "USB", "USB_PD", "USB_C")
+# Daemons that rewrite the boost switch at runtime (on charger events, load, profiles...).
+BOOST_DAEMONS = ("tlp", "auto-cpufreq", "tuned", "system76-power")
+
+
+def boost_switch(root: str = ""):
+    """(path, on_value, off_value) of the CPU boost switch, or (None, None, None).
+
+    The one shared copy of this logic: core discovery and experiments/cpu-boost use it.
+    recipes/smart-boost/ihra-smart-boost is a POSIX-sh mirror kept in parity by tests.
+    """
+    for path, on, off in BOOST_SWITCHES:
+        if _read(root + path) in ("0", "1"):
+            return path, on, off
+    return None, None, None
+
+
+def on_ac_power(root: str = "") -> Optional[bool]:
+    """True on a charger, False on battery, None when unknown (typical desktop).
+
+    Batteries with scope=Device (wireless mice, controllers, headsets) are ignored: they say
+    nothing about how the computer itself is powered.
+    """
+    base = root + "/sys/class/power_supply"
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return None
+    seen_external = False
+    system_battery_status = []
+    for name in names:
+        d = os.path.join(base, name)
+        if _read(os.path.join(d, "scope")) == "Device":
+            continue
+        kind = _read(os.path.join(d, "type"))
+        if kind in EXTERNAL_SUPPLY_TYPES:
+            seen_external = True
+            if _read(os.path.join(d, "online")) == "1":
+                return True
+        elif kind == "Battery":
+            system_battery_status.append(_read(os.path.join(d, "status")))
+    if seen_external:
+        return False
+    if system_battery_status:
+        # A laptop that exposes only its battery: Discharging means no charger.
+        return "Discharging" not in system_battery_status
+    # Desktops often expose no power_supply at all.
+    return None
+
+
+def boost_owners(root: str = "", check_services: bool = True) -> List[Dict[str, object]]:
+    """Other things on this machine that write the boost switch. Read-only.
+
+    runtime=True means it can flip the switch while something runs (udev rule, daemon);
+    runtime=False means it only sets it at boot (tmpfiles rule, oneshot unit).
+    """
+    import glob
+    import shutil
+    import subprocess
+
+    import re
+
+    owners: List[Dict[str, object]] = []
+    pattern = ("cpufreq/boost", "no_turbo")
+    # A rule or unit usually calls a script (RUN+="/usr/local/sbin/x", ExecStart=/path/x):
+    # look inside that script too, or e.g. a renamed smart-boost copy slips through.
+    called = re.compile(r'(?:RUN\+?=\s*"|ExecStart=-?)\s*(/[^\s"]+)')
+
+    def head(path: str) -> str:
+        # Called targets may be binaries (snap rules): read a bounded prefix, ignore bad bytes.
+        try:
+            with open(path, errors="ignore") as f:
+                return f.read(65536)
+        except OSError:
+            return ""
+
+    def writes_boost(text: str) -> bool:
+        if any(p in text for p in pattern):
+            return True
+        return any(any(p in head(root + target) for p in pattern)
+                   for target in called.findall(text))
+
+    for runtime, globs in ((True, ("/etc/udev/rules.d/*.rules", "/lib/udev/rules.d/*.rules")),
+                           (False, ("/etc/tmpfiles.d/*", "/etc/systemd/system/*.service", "/etc/rc.local"))):
+        for g in globs:
+            for path in sorted(glob.glob(root + g)):
+                if writes_boost(head(path)):
+                    owners.append({"owner": path[len(root):], "runtime": runtime})
+    if check_services and not root and shutil.which("systemctl"):
+        for svc in BOOST_DAEMONS:
+            try:
+                active = subprocess.run(["systemctl", "is-active", "--quiet", svc],
+                                        timeout=5).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                active = False
+            if active:
+                owners.append({"owner": f"{svc}.service (active)", "runtime": True})
+    return owners
+
+
 @dataclass
 class CpuPowerState:
     scaling_driver: Optional[str]
@@ -59,33 +164,13 @@ class CpuPowerInspector:
 
     def _boost(self):
         """Return (enabled, control_path). Generic cpufreq knob first, then Intel's inverted one."""
-        generic = "/sys/devices/system/cpu/cpufreq/boost"
-        value = _read(self._p(generic))
-        if value in ("0", "1"):
-            return value == "1", generic
-        intel = "/sys/devices/system/cpu/intel_pstate/no_turbo"
-        value = _read(self._p(intel))
-        if value in ("0", "1"):
-            return value == "0", intel
-        return None, None
+        path, on, _ = boost_switch(self.root)
+        if path is None:
+            return None, None
+        return _read(self._p(path)) == on, path
 
     def _on_ac(self) -> Optional[bool]:
-        base = self._p("/sys/class/power_supply")
-        try:
-            names = sorted(os.listdir(base))
-        except OSError:
-            return None
-        seen_external = False
-        for name in names:
-            kind = _read(os.path.join(base, name, "type"))
-            if kind in ("Mains", "USB", "USB_PD", "USB_C"):
-                seen_external = True
-                if _read(os.path.join(base, name, "online")) == "1":
-                    return True
-        if seen_external:
-            return False
-        # Desktops often expose no power_supply at all.
-        return None
+        return on_ac_power(self.root)
 
     def _physical_cores(self) -> Optional[int]:
         base = self._p("/sys/devices/system/cpu")
