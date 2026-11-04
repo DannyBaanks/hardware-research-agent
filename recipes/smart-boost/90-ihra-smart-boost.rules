@@ -1,5 +1,6 @@
 # Re-evaluate CPU boost whenever a charger is plugged/unplugged (see /usr/local/sbin/ihra-smart-boost).
-# Only the computer's own supplies: chargers, plus system batteries (for laptops that expose no
-# charger entry). Wireless mice/controllers report scope=Device and are skipped, so their battery
-# updates do not wake the script. The script itself logs only when it actually flips the switch.
-SUBSYSTEM=="power_supply", ACTION=="add|change", ATTR{scope}!="Device", ATTR{type}=="Mains|USB|USB_PD|USB_C|Battery", RUN+="/usr/local/sbin/ihra-smart-boost"
+# Chargers, plus batteries (for laptops that expose no charger entry). Do NOT match ATTR{scope}:
+# most laptop ACAD/BAT0 nodes have no scope file, and udev treats a missing attribute as a failed
+# match even with !=, so the rule would never fire. The script itself skips scope=Device batteries
+# (wireless mice) and logs only when it actually flips the switch, so frequent events stay quiet.
+SUBSYSTEM=="power_supply", ACTION=="add|change", ATTR{type}=="Mains|USB|USB_PD|USB_C|Battery", RUN+="/usr/local/sbin/ihra-smart-boost"

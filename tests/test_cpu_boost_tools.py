@@ -67,6 +67,16 @@ class SmartBoostRecipe(unittest.TestCase):
             self.assertEqual(subprocess.run(["bash", "-n", str(RECIPE / name)]).returncode, 0)
         self.assertEqual(subprocess.run(["sh", "-n", str(RECIPE / "ihra-smart-boost")]).returncode, 0)
 
+    def test_udev_rule_does_not_depend_on_optional_attributes(self):
+        # Regression: ATTR{scope}!="Device" never matched on laptops whose ACAD/BAT0 have no
+        # scope file (udev fails a match on a missing attribute even with !=). Seen on the
+        # reference HP Victus: unplugging the charger did not run the script.
+        rule = [l for l in (RECIPE / "90-ihra-smart-boost.rules").read_text().splitlines()
+                if l.strip() and not l.startswith("#")]
+        self.assertEqual(len(rule), 1)
+        self.assertNotIn("ATTR{scope}", rule[0])
+        self.assertIn('ATTR{type}=="Mains|USB|USB_PD|USB_C|Battery"', rule[0])
+
     def test_uninstall_removes_only_what_install_adds(self):
         install = (RECIPE / "install.sh").read_text()
         uninstall = (RECIPE / "uninstall.sh").read_text()
