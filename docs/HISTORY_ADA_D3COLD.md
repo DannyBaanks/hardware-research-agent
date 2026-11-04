@@ -73,9 +73,15 @@ To prevent D3cold while maintaining hardware longevity:
 | **`tensor_modes_driver_runner` u4_s32** (control)| 201.30 Top/s | 201.84 Top/s | 1.003× (invariant)| 0 / 270,336 mismatches |
 | **`mma_bench` f16/f32 & bf16/f32** | 25.5 TF/s | **50.9 TF/s** | **1.996×** | Exact bitwise match |
 | **`mma_bench` fp8/e4m3** | 50.9 TF/s | **101.4 TF/s** | **1.992×** | Exact bitwise match |
-| **`mma_bench` dp4a / ffma** (controls) | 24.6 / 11.6 TF/s | 24.6 / 11.6 TF/s | 1.000× (invariant)| Exact bitwise match |
-| **`gemm_bench` cuBLAS 4096³ FP16** | 29.4 TF/s | **40.0 TF/s** | **+36.2%** | 6/6 exact |
-| **`gemm_bench` cuBLAS 4096³ BF16** | 23.7 TF/s | **38.3 TF/s** | **+61.6%** | 6/6 exact |
+| **`mma_bench` dp4a / ffma** (controls) | 25.3 / 11.8 TF/s | 25.2 / 11.8 TF/s | 0.996× / 1.000× (invariant)| Exact bitwise match |
+| **`gemm_bench` cuBLAS 4096³ FP16**, median (best) | 22.47 (22.55) TF/s | **30.54 (30.72) TF/s** | **+35.9%** (+36.2% best) | 6/6 exact |
+| **`gemm_bench` cuBLAS 4096³ BF16**, median (best) | 21.48 (21.50) TF/s | **31.85 (34.75) TF/s** | **+48.3%** (+61.6% best) | 6/6 exact |
+
+> **Correction (2026-11-03):** earlier versions of this table listed cuBLAS rates (29.4 → 40.0 and
+> 23.7 → 38.3 TF/s) and dp4a/ffma controls (24.6 / 11.6) that appear in no evidence file. All values
+> above are now taken from the raw `gemm_*.jsonl` and `mma_*.txt` files in
+> [gpu-unlock-ada `docs/evidence/ada28a1/`](https://github.com/DannyBaanks/gpu-unlock-ada/tree/main/docs/evidence/ada28a1)
+> (stock `run2` vs `run4_nod3cold`). Median is the honest headline; best-to-best is shown in parentheses.
 
 ---
 
