@@ -1,140 +1,113 @@
-# ISyCo Hardware Research Agent (IHRA)
+# IHRA — let an AI agent help tune your Linux PC, with proof instead of hype
 
-**A research-first protocol for reproducible, supervised Linux hardware experiments.**
+[Español](README_es.md) · [Technical reference](docs/TECHNICAL.md) · [Safety contracts](docs/SAFETY_CONTRACTS.md) · [Case studies](#the-story-behind-it)
 
-[Español](README_es.md) · [Research pipeline](docs/COMMON_RESEARCH_PIPELINE.md) · [Safety contracts](docs/SAFETY_CONTRACTS.md) · [IHRA-01 control results](docs/SYNTHETIC_EXPERIMENT_CONTROLS.md) · [Roadmap](ROADMAP.md) · [Case studies](#research-origins)
+**IHRA (ISyCo Hardware Research Agent)** is a small toolkit plus a rulebook for your AI coding agent (Claude Code, Codex, opencode, Gemini CLI, …). With it, the agent can look at your hardware, measure it, and suggest improvements the way a careful scientist would. **You** stay in charge of every change.
+
+It exists because "optimization tips" on the internet are often wrong, and an AI agent can sound very sure about a tweak that does nothing, or makes things worse. IHRA makes the agent **prove** a gain before anyone calls it one.
 
 > [!IMPORTANT]
-> **Public research prototype, not an autonomous hardware optimizer.** IHRA now supports an explicitly started, fixed five-sample synthetic campaign in addition to discovery and evidence replay. It does **not** authorize or execute hardware/system changes, nor provide durable recovery for general experiments. Do not give it privileged access on the assumption that its policy documents are implemented.
+> IHRA is a **research prototype**, not a one-click booster. On its own it only **reads** your system and runs harmless test workloads. It never overclocks, flashes firmware or changes settings by itself. "We measured it and there is no safe gain" is a perfectly good result.
 
-**Guiding principle:** A well-supported conclusion of **no safe improvement found** is a valid scientific result. Nothing here promises more FPS, more tokens per second, or a universal GPU/CPU unlock.
+## The story behind it
 
-## What is actually implemented
+IHRA came out of real sessions where AI agents helped tune one HP Victus laptop (Ryzen 5 8645HS + RTX 4050 Laptop):
 
-| Component | Present behavior | Boundary |
-|---|---|---|
-| Hardware discovery | Reads CPU features, platform profiles, selected PCI/NPU signals and optional NVIDIA telemetry | Some hardware assumptions and fixed paths are platform-specific; not a full portable inventory |
-| [Sentinel](core/sentinel.py) | Derives risk from the command and accepts only exact, allowlisted read-only commands | Denies all state changes; not an execution sandbox, authenticated approval system, or executor |
-| [AntiFake verifier](core/verifier.py) | Requires a valid SHA-256 per run, finite throughput values, an explicit negative-control delta, and checks contradictory unlock claims | Evidence is caller-supplied; hashes are compared, not recomputed from raw outputs; no physical readback or formal significance test |
-| [Rollback controller](core/rollback.py) | Restricts execution to a power-profile restore/query pair without a shell | **Separate helper**, not wired to an experiment runner; does not establish an end-to-end rollback guarantee |
-| [Dry-run executor](core/executor.py) | Replays two bundled synthetic evidence fixtures through the verifier | **No workload execution, hardware access, or system mutation** |
-| [Synthetic workload executor](core/executor.py) | Runs only the pinned `sha256-chain-v1` CPU workload in a rootless Bubblewrap sandbox with read-only host mounts and isolated temporary filesystems | Not a benchmark or experiment executor; no caller-provided commands, hardware telemetry/control, or persistent host writes |
-| [Synthetic experiment runner](core/experiment.py) | Executes the fixed five-sample plan only after a one-use local TTY confirmation bound to the proposal and plan digests | TTY consent is not authenticated identity and does not protect against malicious same-UID processes; no general planning or hardware authority |
-| [Ada adapter](adapters/ada_adapter.py) | Matches the NVIDIA display function against the exact Ada IDs the gpu-unlock-ada module knows, reads `DynamicPowerManagement` from `/proc/driver/nvidia/params`, the kernel-reported PCI power state, the `gpu_unlock` module's parameters, and optional `nvidia-smi` telemetry | All software-reported: a driver setting or a loaded module is **not proof** that the hardware unlock is active or safe |
-| [REA adapter](adapters/rea_adapter.py) | Locates a local REA clone (run with `node`) or an installed `rea` CLI and runs one REA CLI command (default `inspect-artifact`) | This **executes external tooling** and is not a sandbox. It never falls back to `npx` (no package downloads); MCP-only tools such as `inspect_malbolge` are rejected |
-| Node wrapper | [bin/ihra.mjs](bin/ihra.mjs) dispatches to the Python CLI | Node is a convenience wrapper; Python does the work |
+- **The GPU that lied.** An experimental unlock made the NVIDIA driver *report* full-speed tensor math, yet the real speed had silently dropped back to stock. The laptop's power-saving mode (`D3cold`) was cutting power to the GPU and resetting it. The only way to catch this was to measure real throughput instead of trusting what the software reported. Once the cause was found and fixed, a tensor benchmark ran at about **2× the stock speed**, and real matrix math (cuBLAS) got **+36% to +48%** faster (median, 4096×4096 matrices). → [case study](docs/HISTORY_ADA_D3COLD.md)
+- **The CPU profile that looked better than it was.** Switching from `power-saver` to `performance` raised sustained clock speed by about **12.6%**, but a real CPU benchmark only improved by **5.3%**. The clock number alone would have oversold it. → [case study](docs/HISTORY_REA_CPU_01.md)
 
-The [architecture specification](docs/ARCHITECTURE.md) describes a future autonomous execution owner, hypothesis ledger and evidence recorder; those production modules are **not implemented**. `DryRunExecutor` only replays fixed local fixture data and never executes a workload. Protocol specifications and schemas document intended controls; their existence alone does not enforce them.
+Those are results from **one machine**. They are not promises for yours. The point is the *method*: measure first, compare fairly, and be honest about the result. That method is what IHRA packages.
 
-## Start safely (Linux)
+## How to use it with your AI agent
 
-**Requirements:** Python 3 with the standard library. The fixed workload command additionally requires root-owned `/usr/bin/bwrap` and `/usr/bin/python3`, with rootless user namespaces enabled. Node.js is optional for the JavaScript wrapper. Certain inspections use installed system utilities or companion software.
+**You need:** Linux, `git` and Python 3 (tested on 3.12). Node.js is optional.
+
+**1. Get it**
 
 ```bash
 git clone https://github.com/DannyBaanks/hardware-research-agent.git
 cd hardware-research-agent
-
-# Inspect the implemented CLI and run the host-side tests
-python3 -m core.cli --help
-python3 -m unittest discover -s tests -v
-
-# Discovery: inventory and optional read-only telemetry queries
-python3 -m core.cli discover
-
-# Replay synthetic evidence (does not execute a workload)
-python3 -m core.cli dry-run ada_d3cold_false_positive
-
-# Run the one fixed CPU workload in a rootless sandbox
-python3 -m core.cli run-synthetic sha256-chain-v1
-
-# Inspect the fixed plan and export its strict, non-executable proposal
-python3 -m core.cli show-synthetic-plan
-python3 -m core.cli show-synthetic-proposal > /tmp/ihra-proposal.json
-python3 -m core.cli review-synthetic-proposal /tmp/ihra-proposal.json
-
-# Review the exact proposal again and authorize interactively in the controlling TTY
-python3 -m core.cli run-synthetic-experiment --proposal /tmp/ihra-proposal.json
-
-# Equivalent Node wrapper (requires Node.js)
-node bin/ihra.mjs discover
+python3 -m unittest discover -s tests   # optional: should end with "OK"
 ```
 
-> [!NOTE]
-> Discovery does not intentionally change persistent settings, but tools such as `nvidia-smi` can wake or initialize a dGPU on some systems. The discovery output is a **capability hint**, not independent validation of hardware performance. Review the source before using the agent on a sensitive machine.
-
-### CLI commands and their limits
-
-| Command | What it does | Important caveat |
-|---|---|---|
-| `python3 -m core.cli discover` | Prints inventory and adapter results | Some GPU/NPU detections rely on a fixed device list or path |
-| `python3 -m core.cli setup` | Reports companion repository locations | Currently checks **hard-coded developer-directory paths**; not a general installation checker |
-| `python3 -m core.cli ada` | Reads NVIDIA state and its driver power-management parameter | Reports `NOT_DEMONSTRATED`; a configured parameter is not proof of persistent hardware state or unlock safety |
-| `python3 -m core.cli sentinel 'powerprofilesctl get'` | Checks an exact read-only command against the allowlist | Classification only; no command is executed. All state-changing and unlisted commands are denied |
-| `python3 -m core.cli dry-run <fixture>` | Replays one of two checked-in synthetic evidence fixtures through the verifier | Uses fixture data only; performs zero workload commands, hardware reads, writes, or rollback actions |
-| `python3 -m core.cli run-synthetic sha256-chain-v1` | Runs a fixed 20,000-step SHA-256 chain in a rootless Bubblewrap sandbox | Requires trusted Bubblewrap and system Python; does not accept commands or scripts, access hardware telemetry/control, or persist host state |
-| `python3 -m core.cli show-synthetic-proposal` | Emits the strict JSON proposal for the only eligible synthetic plan | Proposal output is inert data and grants no execution authority |
-| `python3 -m core.cli review-synthetic-proposal <file>` | Validates and displays a proposal without executing or authorizing it | Unknown fields, commands, workloads, and changed limits are rejected |
-| `python3 -m core.cli run-synthetic-experiment --proposal <file>` | Displays the exact proposal, requires typing `AUTHORIZE <plan-sha256>` in the controlling TTY, then runs five sequential samples | No TTY, EOF, cancellation, or digest mismatch denies execution; TTY confirmation is not cryptographic identity and does not protect against same-UID processes |
-| `python3 -m core.cli inspect-synthetic-campaign <campaign-id>` | Reads campaign evidence and checks manifest, plan, proposal, checkpoint, and sample receipts | Read-only; does not resume or execute. Historical campaigns lacking the current proposal/checkpoint contract remain `NOT_DEMONSTRATED` |
-| `python3 -m core.cli inspect /path/to/file [--tool inspect-with-objdump]` | Delegates analysis to one REA CLI command (default `inspect-artifact`) | Starts the local REA Node runtime; exits non-zero unless REA succeeds |
-
-The Sentinel no longer accepts `--human-approved` or a caller-provided tier as authority. A read-only allowlist verdict still **does not grant permission to execute a command**. Proposal review is read-only and proposals cannot supply executable commands or alter the fixed plan. Campaign authorization requires a fresh local TTY confirmation bound to both canonical proposal and plan digests; it is one-use and process-local. This ceremony expresses operator consent but does not authenticate identity or protect against malicious processes running as the same user. The fixed campaign is not connected to Sentinel, hardware adapters, arbitrary experiment plans, or rollback. Evidence is written atomically under `$XDG_STATE_HOME/ihra/synthetic-experiments/` (or `~/.local/state/ihra/synthetic-experiments/`) with private permissions; a failure stops the sequence and preserves completed receipts.
-
-The campaign inspector is read-only and never infers abandonment from age or PID absence. It returns `ACTIVE_OR_UNKNOWN` for a persisted `RUNNING` campaign, `INCOMPLETE` / `NOT_DEMONSTRATED` for missing or inconsistent evidence, and `COMPLETED_VALID` only when the current proposal, plan, terminal checkpoint, five receipts, and manifest agree. Historical evidence remains readable but is not upgraded to `COMPLETED_VALID` when it lacks the current proposal/checkpoint links.
-
-Real Linux tests now also kill the campaign parent with `SIGKILL` while the fixed Bubblewrap workload is active and after a previous sample receipt is durable. In both tested timings the captured sandbox descendants exit, prior receipt evidence remains verifiable, and inspection does not report success. These are isolated test-harness runs with temporary evidence, not a standalone evidence bundle or proof of human authorization. `SIGTERM`, power loss, storage failure, and automatic recovery/resumption remain untested or unavailable.
-
-## Protocol and evidence
-
-The [Common Hardware Research Pipeline](docs/COMMON_RESEARCH_PIPELINE.md) describes the **target workflow**, not a fully implemented unattended service:
-
-```text
-DISCOVER → BASELINE → HYPOTHESIZE → CONTROL → RISK REVIEW
-  → AUTHORIZE → EXPERIMENT → VERIFY → RESTORE → EVIDENCE / RETURN
-```
-
-Before making a performance claim, the methodology calls for a comparable baseline, controls, repeatable workloads, numerical correctness checks, independent physical evidence where available, and a recorded restoration result. Outcomes such as `REFUTED`, `NOT_DEMONSTRATED`, `NO_SAFE_GAIN_FOUND` and `DENY` must be reported without disguising them as success.
-
-### Current antifake implementation — important gaps
-
-- The verifier requires **at least three runs per side**, valid SHA-256-formatted output hashes for **every** run, finite positive throughput values, and an explicit negative-control delta; it computes a **median throughput ratio**. This is not a formal significance test, and the control evidence remains caller-supplied.
-- Hash comparison detects divergence in the **supplied** digests; it does not recalculate them from raw output artifacts.
-- The special D3cold rule rejects a software-unlocked claim when measured throughput stays near stock; the verifier does **not itself read BAR0** or prove the cause of the mismatch.
-- The Sentinel now derives the tier and allows only exact, no-argument read-only commands; all other commands, including arbitrary benchmarks, are denied. This is a conservative classifier, not an OS-enforced sandbox.
-- Tier 1/2 changes remain disabled: the TTY ceremony authorizes only the fixed synthetic CPU campaign and is not authenticated identity or an experiment executor coupled to mandatory restoration. The separate rollback helper supports only a constrained power-profile restore/query pair.
-
-See [Safety contracts](docs/SAFETY_CONTRACTS.md), [12 proposed adversarial scenarios](docs/ANTIFAKE_TEST_MATRIX.md), and the [implementation plan](docs/IMPLEMENTATION_PLAN.md) for the stronger design intended by the project.
-
-## Research origins
-
-These are **source case studies**, not optimizations performed automatically by IHRA:
-
-**A. Optimus `D3cold` / RTX 4050 Laptop.** A boot-time Ada unlock appeared successful to the driver, but a subsequent power-state transition reset volatile hardware registers while the software getter still reported full rate. The decisive control compared physical BAR0 state and actual instruction throughput. On one measured laptop, the retained unlock approached **2× in a tensor instruction probe**; cuBLAS GEMM improved by smaller workload-dependent amounts. See the [IHRA case study](docs/HISTORY_ADA_D3COLD.md), [original evidence](https://github.com/DannyBaanks/gpu-unlock-ada/tree/main/docs/evidence/ada28a1), and [upstream PR #134](https://github.com/JustAResearcher/gpu-unlock-ada/pull/134).
-
-**B. REA-CPU-01 / Ryzen 5 8645HS.** A counterbalanced power-profile campaign reported approximately **+12.6% sustained clock** but **+5.3% in a particular CPU microbenchmark** on one HP Victus. The XDNA device was detected, but useful user-space NPU inference was not established; no supported safe write path for the explored SMU controls was identified. See the [CPU case study](docs/HISTORY_REA_CPU_01.md). This is **not** a universal CPU boost.
-
-### Related repositories
-
-- [REA — reverse-engineering tools](https://github.com/DannyBaanks/rea): companion research tooling with its own prerequisites and security considerations.
-- [gpu-unlock-ada — experimental GPU work](https://github.com/DannyBaanks/gpu-unlock-ada): separate kernel/firmware research; **not installed or run automatically by IHRA**.
-
-## Tests and reproducibility
+**2. See what it finds on your PC** (read-only, changes nothing)
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m core.cli --text discover
 ```
 
-The repository contains `unittest` tests for mocked adapters, Sentinel allowlist denials, constrained rollback behavior, verifier input bounds, required hashes, fixture replay, the fixed workload executor, ten synthetic campaign adversarial controls, read-only campaign recovery inspection, simulated cuts at persistence boundaries, and two real Linux/Bubblewrap parent-`SIGKILL` timings. The [IHRA-01 control report](docs/SYNTHETIC_EXPERIMENT_CONTROLS.md) separates simulated controls from real process checks and records the verified campaign and timeout evidence. The five-sample campaign demonstrates repeatability only—not performance or hardware optimization. Checkpoints, read-only inspection, and the two tested interruption timings are demonstrated; automatic recovery/resumption, power-loss or storage-failure behavior, autonomous planning, general authorization, and hardware changes are not demonstrated or provided.
+You will see your CPU, power profile, GPU and NPU (if you have them). Drop `--text` to get JSON, which is easier for an agent to read.
 
-Consult [fixtures](fixtures/), [experiment schema](schemas/experiment.schema.json) and [evidence schema](schemas/evidence.schema.json) for the current test contracts. Synthetic fixtures are not raw hardware execution logs.
+**3. Open your AI agent inside this folder and paste this prompt:**
 
-## Safety and publication
+```text
+You are helping me research performance on my Linux PC using IHRA (this repo).
+First read AGENTS.md and README.md, then run: python3 -m core.cli discover
 
-- Read-only research is the default **policy goal**, not a claim of universal OS-level isolation.
-- Tier 3 operations such as direct firmware, SMU or MSR writes are forbidden by the documented protocol; the current string-based gate is **not a substitute** for an OS-enforced deny-by-default executor.
-- No automatic overclocking, undervolting, BIOS modification or thermal-limit bypass is provided or endorsed.
-- Never publish hostnames, serials, GPU UUIDs, tokens or raw private traces without a separate redaction review.
+Rules:
+- Only run read-only commands on your own. Ask me before ANY change to my system,
+  and tell me exactly how to undo it before I make it.
+- Never flash firmware or BIOS, write MSR/SMU registers, or disable thermal limits.
+- Measure before and after at least 3 times each, with the same workload, and
+  check the results are still correct, not just faster.
+- Don't trust what software reports on its own; confirm with real measurements.
+- If you can't prove a gain, say NOT_DEMONSTRATED or NO_SAFE_GAIN_FOUND.
 
-**License: MIT.** The repository root contains the MIT grant in [`LICENSE`](LICENSE), and `package.json` declares the same identifier. DannyBaanks selected MIT; the earlier Apache-2.0 proposal is superseded.
+My goal: <for example "faster local AI models", "quieter fans", "better battery life">
+```
 
-**Status:** publicly available **HRA-00 research prototype**. See [ROADMAP.md](ROADMAP.md) for the original staged proposal; older notes referring to a not-yet-created public repository are historical, not the current publication state.
+From there the agent can explain your hardware, propose a plan, and help you measure each change. You decide what actually gets applied.
+
+## What IHRA does, and what it doesn't
+
+| ✅ IHRA does | 🚫 IHRA does not |
+|---|---|
+| Report your CPU, power profile, GPU and NPU (`discover`) | Change any setting by itself |
+| Check whether a command is on its read-only allowlist (`sentinel`) | Overclock, undervolt, or modify BIOS/firmware |
+| Run a fixed, harmless CPU test in a sandbox to check that results repeat | Promise more FPS or a faster PC |
+| Reject "faster" claims that lack proper runs, hashes and a control (`AntiFake`) | Let an agent call a single lucky run a win |
+| Show NVIDIA Ada status and the D3cold power trap (`ada`) | Install or run the experimental GPU unlock for you |
+
+## What the results mean
+
+| Result | In plain words |
+|---|---|
+| `DEMONSTRATED` | Measured properly and the effect is real *on this machine* |
+| `NOT_DEMONSTRATED` | Not enough evidence yet, so don't count it as a gain |
+| `NO_SAFE_GAIN_FOUND` | Tested fairly and nothing safe helped. That's still useful to know! |
+| `REFUTED` / `DENY` | The claim was false, or the action isn't allowed |
+
+## Handy commands
+
+| Command | What it does |
+|---|---|
+| `python3 -m core.cli --text discover` | Summary of your hardware |
+| `python3 -m core.cli ada` | NVIDIA RTX 40-series status: driver power setting, unlock module, power state |
+| `python3 -m core.cli sentinel 'lscpu'` | Is this exact command on the read-only allowlist? (nothing is executed) |
+| `python3 -m core.cli dry-run ada_d3cold_false_positive` | Replays the "GPU that lied" case with sample data |
+| `python3 -m core.cli run-synthetic sha256-chain-v1` | Harmless sandboxed CPU test (needs `bubblewrap`) |
+| `python3 -m core.cli inspect <file>` | Analyse a binary with [REA](https://github.com/DannyBaanks/rea), if you have it installed |
+
+If you have Node.js, `node bin/ihra.mjs <command>` works too. The full list, with every limit spelled out, is in the [technical reference](docs/TECHNICAL.md#cli-commands-and-their-limits).
+
+## Questions
+
+**Will this make my games or AI models faster?** Maybe, maybe not. IHRA helps you *find out* honestly. Often the answer is a power profile, a driver setting or a cooling fix, and sometimes there's nothing safe to gain.
+
+**Can it break my PC?** IHRA on its own only reads information and runs a sandboxed test. The risk comes from changes **you** approve, which is why the rules above require a way to undo every change and why dangerous categories are banned. Read what your agent proposes before saying yes.
+
+**Windows or macOS?** Not yet. IHRA reads Linux-specific files (`/proc`, `/sys`).
+
+**Do I need an NVIDIA GPU?** No. The NVIDIA checks only kick in when one is present.
+
+**What about the 2× GPU unlock?** That is a separate experimental kernel project, [gpu-unlock-ada](https://github.com/DannyBaanks/gpu-unlock-ada). It covers specific RTX 40-series cards, is only verified on one laptop, and has real risks. IHRA never installs it.
+
+## For developers
+
+- [Technical reference](docs/TECHNICAL.md): exactly what is implemented, where each guarantee stops, and the known gaps
+- [Research pipeline](docs/COMMON_RESEARCH_PIPELINE.md) · [Safety contracts](docs/SAFETY_CONTRACTS.md) · [Architecture](docs/ARCHITECTURE.md) · [Roadmap](ROADMAP.md)
+- Tests: `python3 -m unittest discover -s tests -v`
+
+Please don't publish hostnames, serial numbers, GPU UUIDs or tokens in issues or evidence.
+
+**License:** [MIT](LICENSE) · Made by [DannyBaanks](https://github.com/DannyBaanks), together with the AI agents that helped tune the laptop where IHRA was born.
