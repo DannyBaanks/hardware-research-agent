@@ -85,6 +85,16 @@ To prevent D3cold while maintaining hardware longevity:
 
 ---
 
+### Follow-up (2026-11-04): repeated, and one earlier anomaly retracted
+
+Eleven more matched runs ([evidence](https://github.com/DannyBaanks/gpu-unlock-ada/tree/main/docs/evidence/ada28a1-followup-2026-11-04)):
+the retained unlock reproduced in **5/5** runs (tensor 1.99×, cuBLAS 4096³ median +42 % FP16 / +50 % BF16 vs same-day stock),
+and a deliberate `D3cold` boot reproduced the false positive (getter says full rate, throughput equals stock).
+A 13–19 % cuBLAS slowdown seen in the original wiped runs did **not** reproduce, so it was a session artifact, not a `D3cold` effect.
+Lesson for agents: repeat the run before explaining an anomaly.
+
+---
+
 ## 4. Methodological Lessons for Hardware Agents
 
 1. **Software Telemetry $\neq$ Physical Execution:**
