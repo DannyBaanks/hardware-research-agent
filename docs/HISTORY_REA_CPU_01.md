@@ -87,6 +87,37 @@ Prior to any benchmark execution, the agent captured:
 
 ---
 
+> **Correction (2026-11-04): the ~5 % was not the ceiling.** A re-examination (REA-CPU-02) found three
+> problems with the campaign above, none visible in its own verdicts:
+> 1. **CPU boost was disabled** by a local rule (`/etc/tmpfiles.d/amd-boost.conf` writing
+>    `cpufreq/boost=0` at boot). The `boost: 0` line in the inventory was a switch turned off, not a
+>    firmware cap; clocks sat at ~4.27 GHz while the hardware maximum is ~5.0 GHz.
+> 2. **The benchmark was GIL-bound.** `cpu_microbench.py` runs Python threads, which the GIL serialises, so
+>    "12 threads" is roughly one core.
+> 3. **Background load.** Re-run on an idle machine, the same benchmark (same hash) gives 6.66 vs 4.95 MOPS.
+>
+> The power-profile result (A.1/A.2) stands as measured under those conditions.
+
+### Follow-up: REA-CPU-02 boost on/off matrix (AC, 36 jobs, hashes invariant)
+
+| Workload | Boost off | Boost on | Gain | Package W | Energy per op |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Integer, 1 thread | 0.530 Gops/s | 0.613 | **+15.7 %** | 8.4 → 14.2 | +46 % |
+| AVX-512 FMA, 1 thread | 67.8 GFLOP/s | 78.7 | **+16.1 %** | 8.9 → 15.8 | +52 % |
+| Integer, 12 threads | 5.08 Gops/s | 5.49 | **+8.1 %** | 21.5 → 32.3 | +39 % |
+| AVX-512 FMA, 12 threads | 408 GFLOP/s | 444 | **+8.8 %** | 27.7 → 41.4 | +38 % |
+| Memory triad | 31.2 GB/s | 31.4 | +0.4 % | 22.3 → 36.5 | +63 % |
+
+On battery the single-thread gain is the same, but the all-core gain vanishes (package capped near 22 W).
+RAM is 2×8 GB DDR5-5600 in dual channel, so the suspected single-channel bottleneck was **refuted**.
+The owner chose a "smart boost" (on with charger, off on battery): [`recipes/smart-boost`](../recipes/smart-boost/README.md).
+Reproduce on any Linux machine with [`experiments/cpu-boost`](../experiments/cpu-boost/README.md).
+
+**Lesson:** the same as the GPU case. A setting that *reports* a limit ("max 4.3 GHz") is not
+the hardware limit. Find out who set it before calling it a ceiling.
+
+---
+
 ## 4. Methodological Lessons for Hardware Agents
 
 1. **Negative Results Are Valid Deliverables:**

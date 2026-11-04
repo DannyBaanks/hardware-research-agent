@@ -13,10 +13,10 @@ Existe porque muchos "trucos de optimización" de internet están mal, y un agen
 
 IHRA nació de sesiones reales en las que agentes de IA ayudaron a afinar una laptop HP Victus (Ryzen 5 8645HS + RTX 4050 Laptop):
 
-- **La GPU que mentía.** Un desbloqueo experimental hacía que el driver de NVIDIA *reportara* cómputo tensorial a velocidad completa, pero la velocidad real había vuelto en silencio a la de fábrica. El modo de ahorro de energía de la laptop (`D3cold`) le cortaba la corriente a la GPU y la reiniciaba. Solo se descubrió midiendo el rendimiento real en vez de confiar en lo que decía el software. Una vez encontrada y corregida la causa, una prueba tensorial corrió a cerca de **2× la velocidad de fábrica**, y el cálculo de matrices real (cuBLAS) mejoró entre **+36 % y +48 %** (mediana, matrices de 4096×4096). → [caso completo](docs/HISTORY_ADA_D3COLD.md)
-- **El perfil de CPU que parecía mejor de lo que era.** Pasar del perfil `power-saver` a `performance` subió la frecuencia sostenida cerca de un **12.6 %**, pero un benchmark real de CPU solo mejoró un **5.3 %**. Fiarse solo de la frecuencia habría exagerado el resultado. → [caso completo](docs/HISTORY_REA_CPU_01.md)
+- **La GPU que mentía.** Un desbloqueo experimental hacía que el driver de NVIDIA *reportara* cómputo tensorial a velocidad completa, pero la velocidad real había vuelto en silencio a la de fábrica. El modo de ahorro de energía de la laptop (`D3cold`) le cortaba la corriente a la GPU y la reiniciaba. Solo se descubrió midiendo el rendimiento real en vez de confiar en lo que decía el software. Una vez encontrada y corregida la causa, una prueba tensorial corrió a cerca de **2× la velocidad de fábrica** en 5 de 5 corridas repetidas, y el cálculo de matrices real (cuBLAS) mejoró entre **+36 % y +50 %**. → [caso completo](docs/HISTORY_ADA_D3COLD.md)
+- **El "techo del 5 %" que era un turbo apagado.** Un primer estudio de la CPU concluyó que solo quedaba cerca de +5 % de margen. Al revisarlo de nuevo se encontró que el **turbo estaba apagado** por un archivo de configuración que había puesto otro agente, que el benchmark era Python con hilos atorados en un solo núcleo y que había programas corriendo en segundo plano. Medido bien, el turbo dio **+16 % en un núcleo y +8–9 % en todos** con cargador, y casi nada en batería. Así que el dueño eligió un "turbo inteligente": encendido con cargador y apagado en batería. → [caso completo](docs/HISTORY_REA_CPU_01.md)
 
-Son resultados de **una sola máquina**, no promesas para la tuya. Lo valioso es el *método*: medir primero, comparar de forma justa y ser honesto con el resultado. Ese método es lo que IHRA empaqueta.
+Las dos historias enseñan lo mismo: **lo que reporta el sistema no siempre es lo que hace el hardware.** Son resultados de **una sola máquina**, no promesas para la tuya. Lo valioso es el *método*: buscar interruptores escondidos, medir primero, comparar de forma justa y ser honesto con el resultado. Ese método es lo que IHRA empaqueta.
 
 ## Cómo usarlo con tu agente de IA
 
@@ -43,6 +43,8 @@ Verás tu CPU, tu perfil de energía, tu GPU y tu NPU (si tienes). Sin `--text` 
 ```text
 Ayúdame a investigar el rendimiento de mi PC Linux usando IHRA (este repo).
 Primero lee AGENTS.md y README_es.md y luego ejecuta: python3 -m core.cli discover
+Empieza por los avisos de "Things to check" que imprima (turbo apagado,
+batería, carga en segundo plano) antes de medir cualquier cosa.
 
 Reglas:
 - Por tu cuenta solo puedes ejecutar comandos de lectura. Pregúntame antes de
@@ -64,6 +66,7 @@ A partir de ahí el agente te explica tu hardware, te propone un plan y te ayuda
 | ✅ IHRA sí | 🚫 IHRA no |
 |---|---|
 | Reporta tu CPU, perfil de energía, GPU y NPU (`discover`) | Cambia ajustes por su cuenta |
+| Avisa de interruptores escondidos: turbo apagado, batería, perfil de ahorro, carga en segundo plano | Adivina por qué se cambió un ajuste; te dice dónde buscar |
 | Revisa si un comando está en su lista de solo lectura (`sentinel`) | Hace overclock, undervolt ni modifica BIOS/firmware |
 | Corre una prueba fija e inofensiva de CPU en un sandbox para ver que los resultados se repitan | Promete más FPS ni una PC más rápida |
 | Rechaza afirmaciones de "más rápido" sin suficientes corridas, hashes y un control (`AntiFake`) | Deja que un agente presuma una sola corrida con suerte |
@@ -88,6 +91,15 @@ A partir de ahí el agente te explica tu hardware, te propone un plan y te ayuda
 | `python3 -m core.cli dry-run ada_d3cold_false_positive` | Reproduce el caso de "la GPU que mentía" con datos de ejemplo |
 | `python3 -m core.cli run-synthetic sha256-chain-v1` | Prueba de CPU inofensiva en sandbox (necesita `bubblewrap`) |
 | `python3 -m core.cli inspect <archivo>` | Analiza un binario con [REA](https://github.com/DannyBaanks/rea), si lo tienes instalado |
+
+## Experimentos y recetas listos
+
+| Qué | Cómo correrlo | Qué cambia |
+|---|---|---|
+| **¿El turbo ayuda en mi PC?** Prueba justa con y sin turbo, con watts, relojes, temperatura y hashes | [`experiments/cpu-boost`](experiments/cpu-boost/README.md) | Solo el interruptor del turbo, siempre se restaura |
+| **Turbo inteligente:** encendido con cargador, apagado en batería | [`recipes/smart-boost`](recipes/smart-boost/README.md) | Agrega 3 archivos; `uninstall.sh` los quita |
+
+Necesitan `sudo` porque tocan un ajuste del sistema. Tu agente te los explica; **tú** los corres.
 
 Si tienes Node.js, `node bin/ihra.mjs <comando>` también funciona. La lista completa, con cada límite explicado, está en la [referencia técnica](docs/TECHNICAL_es.md#referencia-de-comandos-y-advertencias).
 

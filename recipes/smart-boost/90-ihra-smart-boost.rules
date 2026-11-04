@@ -1,0 +1,2 @@
+# Re-evaluate CPU boost whenever a charger is plugged/unplugged (see /usr/local/sbin/ihra-smart-boost).
+SUBSYSTEM=="power_supply", ACTION=="add|change", RUN+="/usr/local/sbin/ihra-smart-boost"

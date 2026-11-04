@@ -1,0 +1,23 @@
+#!/bin/sh
+# IHRA smart boost: CPU boost ON with a charger connected, OFF on battery.
+# Why: on the reference laptop boost gave +16% single-thread / +8-9% all-core on AC, but ~0%
+# all-core on battery at +40-60% energy per operation (docs/HISTORY_REA_CPU_01.md).
+# Supports cpufreq/boost (AMD, generic) and intel_pstate/no_turbo. SYSFS_ROOT is for tests.
+R="${SYSFS_ROOT:-}"
+if [ -e "$R/sys/devices/system/cpu/cpufreq/boost" ]; then
+  KNOB="$R/sys/devices/system/cpu/cpufreq/boost"; ON=1; OFF=0
+elif [ -e "$R/sys/devices/system/cpu/intel_pstate/no_turbo" ]; then
+  KNOB="$R/sys/devices/system/cpu/intel_pstate/no_turbo"; ON=0; OFF=1
+else
+  logger -t ihra-smart-boost "no CPU boost switch found" 2>/dev/null; exit 0
+fi
+[ -w "$KNOB" ] || { logger -t ihra-smart-boost "boost switch not writable: $KNOB" 2>/dev/null; exit 0; }
+charger=0
+for ps in "$R"/sys/class/power_supply/*; do
+  [ -r "$ps/type" ] && [ -r "$ps/online" ] || continue
+  case "$(cat "$ps/type")" in Mains|USB|USB_PD|USB_C) [ "$(cat "$ps/online")" = 1 ] && charger=1 ;; esac
+done
+if [ "$charger" = 1 ]; then want=$ON; else want=$OFF; fi
+[ "$(cat "$KNOB")" = "$want" ] || echo "$want" > "$KNOB"
+logger -t ihra-smart-boost "charger=$charger $(basename "$KNOB")=$(cat "$KNOB")" 2>/dev/null
+exit 0

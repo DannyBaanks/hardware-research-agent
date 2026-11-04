@@ -1,0 +1,10 @@
+[Unit]
+Description=IHRA smart boost (CPU boost on with charger, off on battery)
+After=systemd-tmpfiles-setup.service power-profiles-daemon.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ihra-smart-boost
+
+[Install]
+WantedBy=multi-user.target

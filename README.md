@@ -13,10 +13,10 @@ It exists because "optimization tips" on the internet are often wrong, and an AI
 
 IHRA came out of real sessions where AI agents helped tune one HP Victus laptop (Ryzen 5 8645HS + RTX 4050 Laptop):
 
-- **The GPU that lied.** An experimental unlock made the NVIDIA driver *report* full-speed tensor math, yet the real speed had silently dropped back to stock. The laptop's power-saving mode (`D3cold`) was cutting power to the GPU and resetting it. The only way to catch this was to measure real throughput instead of trusting what the software reported. Once the cause was found and fixed, a tensor benchmark ran at about **2× the stock speed**, and real matrix math (cuBLAS) got **+36% to +48%** faster (median, 4096×4096 matrices). → [case study](docs/HISTORY_ADA_D3COLD.md)
-- **The CPU profile that looked better than it was.** Switching from `power-saver` to `performance` raised sustained clock speed by about **12.6%**, but a real CPU benchmark only improved by **5.3%**. The clock number alone would have oversold it. → [case study](docs/HISTORY_REA_CPU_01.md)
+- **The GPU that lied.** An experimental unlock made the NVIDIA driver *report* full-speed tensor math, yet the real speed had silently dropped back to stock. The laptop's power-saving mode (`D3cold`) was cutting power to the GPU and resetting it. The only way to catch this was to measure real throughput instead of trusting what the software reported. Once the cause was found and fixed, a tensor benchmark ran at about **2× the stock speed** in 5 out of 5 repeat runs, and real matrix math (cuBLAS) got **+36% to +50%** faster. → [case study](docs/HISTORY_ADA_D3COLD.md)
+- **The "5% ceiling" that was a switched-off turbo.** A first CPU study concluded about +5% was all this laptop had left. A second look found the CPU **turbo had been disabled** by a config file another agent had added, the benchmark was Python threads stuck on a single core, and other programs were running in the background. Measured properly, turbo on gave **+16% on one core and +8–9% on all cores** while plugged in, and almost nothing on battery. So the owner went with a "smart boost": on with the charger, off on battery. → [case study](docs/HISTORY_REA_CPU_01.md)
 
-Those are results from **one machine**. They are not promises for yours. The point is the *method*: measure first, compare fairly, and be honest about the result. That method is what IHRA packages.
+Both stories teach the same lesson: **what the system reports is not always what the hardware is doing.** Those are results from **one machine**. They are not promises for yours. The point is the *method*: look for hidden switches, measure first, compare fairly, and be honest about the result. That method is what IHRA packages.
 
 ## How to use it with your AI agent
 
@@ -43,6 +43,8 @@ You will see your CPU, power profile, GPU and NPU (if you have them). Drop `--te
 ```text
 You are helping me research performance on my Linux PC using IHRA (this repo).
 First read AGENTS.md and README.md, then run: python3 -m core.cli discover
+Start with any "Things to check" hints it prints (disabled turbo, battery,
+background load) before benchmarking anything.
 
 Rules:
 - Only run read-only commands on your own. Ask me before ANY change to my system,
@@ -63,6 +65,7 @@ From there the agent can explain your hardware, propose a plan, and help you mea
 | ✅ IHRA does | 🚫 IHRA does not |
 |---|---|
 | Report your CPU, power profile, GPU and NPU (`discover`) | Change any setting by itself |
+| Warn about hidden switches: turbo disabled, on battery, power-saving profile, background load | Guess why a setting was changed; it tells you where to look |
 | Check whether a command is on its read-only allowlist (`sentinel`) | Overclock, undervolt, or modify BIOS/firmware |
 | Run a fixed, harmless CPU test in a sandbox to check that results repeat | Promise more FPS or a faster PC |
 | Reject "faster" claims that lack proper runs, hashes and a control (`AntiFake`) | Let an agent call a single lucky run a win |
@@ -87,6 +90,15 @@ From there the agent can explain your hardware, propose a plan, and help you mea
 | `python3 -m core.cli dry-run ada_d3cold_false_positive` | Replays the "GPU that lied" case with sample data |
 | `python3 -m core.cli run-synthetic sha256-chain-v1` | Harmless sandboxed CPU test (needs `bubblewrap`) |
 | `python3 -m core.cli inspect <file>` | Analyse a binary with [REA](https://github.com/DannyBaanks/rea), if you have it installed |
+
+## Ready-made experiments and recipes
+
+| What | Run it | Changes |
+|---|---|---|
+| **Does turbo help on my PC?** A fair on/off test with watts, clocks, temperature and hashes | [`experiments/cpu-boost`](experiments/cpu-boost/README.md) | Only the turbo switch, always restored |
+| **Smart boost:** turbo on with charger, off on battery | [`recipes/smart-boost`](recipes/smart-boost/README.md) | Adds 3 files; `uninstall.sh` removes them |
+
+These need `sudo` because they touch a system setting. Your agent should explain them to you; **you** run them.
 
 If you have Node.js, `node bin/ihra.mjs <command>` works too. The full list, with every limit spelled out, is in the [technical reference](docs/TECHNICAL.md#cli-commands-and-their-limits).
 
