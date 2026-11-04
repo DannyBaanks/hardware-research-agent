@@ -81,24 +81,35 @@ def cmd_discover(args):
 
 def cmd_inspect(args):
     rea = ReaAdapter()
-    tool = args.tool or "inspect_malbolge"
+    tool = args.tool or ReaAdapter.DEFAULT_TOOL
     result = rea.inspect_binary(args.target, tool_name=tool)
     print(json.dumps(result, indent=2))
+    if result.get("status") != "OK":
+        sys.exit(1)
 
 
 def cmd_ada(args):
     ada = AdaUnlockAdapter()
     telemetry = ada.read_telemetry()
     d3cold = ada.read_d3cold_status()
+    if d3cold.get("driver_parameter_indicates_prevention"):
+        recommendation = (
+            "The driver parameter is configured to disable runtime dynamic power management; "
+            "hardware persistence and unlock safety remain NOT_DEMONSTRATED."
+        )
+    elif d3cold.get("status") == "NOT_EXPOSED" or "driver_parameter_indicates_prevention" not in d3cold:
+        recommendation = (
+            "The DynamicPowerManagement parameter could not be read (is the nvidia module loaded?); "
+            "D3cold configuration and hardware state are NOT_DEMONSTRATED."
+        )
+    else:
+        recommendation = (
+            "The driver parameter does not indicate D3cold prevention; hardware state is NOT_DEMONSTRATED."
+        )
     result = {
         "telemetry": telemetry,
         "d3cold_analysis": d3cold,
-        "recommendation": (
-            "The driver parameter is configured to disable runtime dynamic power management; "
-            "hardware persistence and unlock safety remain NOT_DEMONSTRATED."
-            if d3cold.get("driver_parameter_indicates_prevention")
-            else "The driver parameter does not indicate D3cold prevention; hardware state is NOT_DEMONSTRATED."
-        ),
+        "recommendation": recommendation,
         "recommendation_status": "NOT_DEMONSTRATED",
     }
     print(json.dumps(result, indent=2))
@@ -254,7 +265,7 @@ def cmd_setup(args):
             "path": str(rea_path),
             "exists": rea_path.exists(),
             "repo": "https://github.com/DannyBaanks/rea",
-            "has_compact_profile": True
+            "has_cli_entrypoint": (rea_path / "scripts" / "rea.mjs").exists()
         },
         "gpu_unlock_ada": {
             "path": str(ada_path),
@@ -283,7 +294,12 @@ def main():
     # inspect
     p_insp = subparsers.add_parser("inspect", help="Run REA binary analysis / disassembly")
     p_insp.add_argument("target", help="Target file to analyze")
-    p_insp.add_argument("--tool", default="inspect_malbolge", help="Tool name (e.g. inspect_malbolge, trace_malbolge)")
+    p_insp.add_argument(
+        "--tool",
+        default=None,
+        help="REA CLI command (default: inspect-artifact; e.g. inspect-with-objdump, inspect-binary-layout). "
+             "MCP-only tools such as inspect_malbolge are rejected",
+    )
     p_insp.set_defaults(func=cmd_inspect)
 
     # ada

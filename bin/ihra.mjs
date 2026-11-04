@@ -8,6 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
+import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,6 +44,11 @@ python.on("error", (err) => {
   process.exit(1);
 });
 
-python.on("close", (code) => {
-  process.exit(code ?? 0);
+python.on("close", (code, signal) => {
+  if (signal) {
+    // A killed core must never look like success: use the shell's 128+N convention.
+    const signo = os.constants.signals[signal] ?? 0;
+    process.exit(128 + signo);
+  }
+  process.exit(code ?? 1);
 });

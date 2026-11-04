@@ -4,6 +4,14 @@ import subprocess
 from typing import Dict, Any
 from .base import HardwareAdapter, CapabilityStatus, AdapterProbeResult
 
+
+def _smi_number(value):
+    """nvidia-smi prints '[N/A]' for fields a GPU does not report (e.g. laptop power limits)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 class LinuxInventoryAdapter(HardwareAdapter):
     name = "linux_inventory"
     is_read_only = True
@@ -94,8 +102,8 @@ class NvidiaTelemetryAdapter(HardwareAdapter):
                     return {
                         "gpu_name": parts[0] if len(parts) > 0 else "unknown",
                         "pstate": parts[1] if len(parts) > 1 else "unknown",
-                        "temp_c": float(parts[2]) if len(parts) > 2 else 0.0,
-                        "power_w": float(parts[3]) if len(parts) > 3 else 0.0,
+                        "temp_c": _smi_number(parts[2]) if len(parts) > 2 else None,
+                        "power_w": _smi_number(parts[3]) if len(parts) > 3 else None,
                     }
             except Exception as e:
                 return {"error": str(e)}
@@ -106,31 +114,64 @@ class AmdXdnaDiscoveryAdapter(HardwareAdapter):
     name = "amd_xdna_discovery"
     is_read_only = True
 
+    def __init__(self, sysfs_root: str = ""):
+        # Prefix for every sysfs/dev path; tests point it at a fake tree.
+        self.sysfs_root = sysfs_root
+
+    def _find_accel(self):
+        """Return (accel_name, pci_slot, pci_dir) for the first AMD accel node, else None."""
+        class_dir = self.sysfs_root + "/sys/class/accel"
+        try:
+            names = sorted(os.listdir(class_dir))
+        except OSError:
+            return None
+        for name in names:
+            dev_link = os.path.join(class_dir, name, "device")
+            pci_dir = os.path.realpath(dev_link)
+            try:
+                with open(os.path.join(pci_dir, "vendor")) as f:
+                    vendor = f.read().strip()
+            except OSError:
+                continue
+            if vendor == "0x1022":
+                return name, os.path.basename(pci_dir), pci_dir
+        return None
+
     def probe(self) -> AdapterProbeResult:
-        pci_node = "/sys/bus/pci/devices/0000:07:00.1"
-        accel_node = "/dev/accel/accel0"
-        if not (os.path.exists(pci_node) or os.path.exists(accel_node)):
+        found = self._find_accel()
+        if found is None:
             return AdapterProbeResult(
                 status=CapabilityStatus.NOT_APPLICABLE,
-                reason="AMD XDNA IPU PCI device (07:00.1) or /dev/accel/accel0 not present"
+                reason="No AMD accel device found under /sys/class/accel"
             )
+        _, slot, pci_dir = found
+        try:
+            with open(os.path.join(pci_dir, "device")) as f:
+                device = f.read().strip()
+        except OSError:
+            device = "unknown"
         return AdapterProbeResult(
             status=CapabilityStatus.SUPPORTED,
-            device_id="amd_xdna_ipu_1022:1502"
+            device_id=f"amd_xdna_{slot}_1022:{device.replace('0x', '')}"
         )
 
     def read_telemetry(self) -> Dict[str, Any]:
-        fw_path = "/sys/bus/pci/devices/0000:07:00.1/fw_version"
+        found = self._find_accel()
+        if found is None:
+            return {"status": "ABSENT"}
+        name, slot, pci_dir = found
         fw = "unknown"
-        if os.path.exists(fw_path):
-            try:
-                with open(fw_path) as f:
-                    fw = f.read().strip()
-            except Exception:
-                pass
+        try:
+            with open(os.path.join(pci_dir, "fw_version")) as f:
+                fw = f.read().strip()
+        except OSError:
+            pass
+        driver_link = os.path.join(pci_dir, "driver")
+        driver = os.path.basename(os.path.realpath(driver_link)) if os.path.islink(driver_link) else None
         return {
-            "device_node": "/dev/accel/accel0",
-            "driver": "amdxdna",
+            "device_node": f"/dev/accel/{name}",
+            "pci_slot": slot,
+            "driver": driver,
             "firmware_version": fw,
             "userspace_xrt_installed": shutil.which("xrt-smi") is not None
         }
