@@ -4,6 +4,8 @@ import subprocess
 from typing import Dict, Any, List
 from dataclasses import dataclass
 
+from .cpu_power import CpuPowerInspector
+
 @dataclass
 class HardwareInventory:
     cpu_model: str
@@ -59,7 +61,7 @@ class HardwareDiscovery:
                 pass
 
         # NPU check
-        npu_present = os.path.exists("/dev/accel/accel0") or os.path.exists("/sys/bus/pci/devices/0000:07:00.1")
+        npu_present = os.path.isdir("/sys/class/accel") and bool(os.listdir("/sys/class/accel"))
 
         # PCI summary
         pci_devs = []
@@ -72,7 +74,7 @@ class HardwareDiscovery:
 
         return HardwareInventory(
             cpu_model=cpu_model,
-            physical_cores=logical_threads // 2 if logical_threads > 1 else 1,
+            physical_cores=CpuPowerInspector()._physical_cores() or logical_threads or 1,
             logical_threads=logical_threads,
             vector_isa=vector_isa,
             has_avx512=has_avx512,

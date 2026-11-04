@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from .discovery import HardwareDiscovery
+from .cpu_power import CpuPowerInspector
 from .authorization import AuthorizationDenied, authorize_plan_from_tty
 from .sentinel import SentinelGate, SentinelVerdict
 from .verifier import AntiFakeVerifier, VerificationVerdict
@@ -48,6 +49,7 @@ def cmd_discover(args):
 
     cpu_perf = LinuxCpuPerfAdapter()
     perf_status = cpu_perf.probe().status.value
+    cpu_power = CpuPowerInspector().inspect()
 
     output = {
         "protocol": "IHRA/1.0",
@@ -61,6 +63,7 @@ def cmd_discover(args):
             "platform_profile_choices": inv.platform_profile_choices,
             "cpu_perf_adapter": perf_status
         },
+        "cpu_power": cpu_power.to_dict(),
         "npu_xdna": xdna_info,
         "gpu_ada_unlock": ada_info,
         "rea_reverse_tools": rea_info
@@ -77,6 +80,15 @@ def cmd_discover(args):
         print(f"GPU Ada Canary: {ada_info.get('gpu_name', 'Unknown')} (Device: {ada_info.get('device_id', 'N/A')})")
         print(f"D3cold Persistence: {ada_info.get('d3cold_status', {}).get('status', 'Unknown')}")
         print(f"REA Reverse Suite: {rea_info.get('status', 'Unavailable')} (Path: {rea_info.get('rea_path', 'N/A')})")
+        boost = {True: "on", False: "OFF", None: "unknown"}[cpu_power.boost_enabled]
+        power = {True: "charger", False: "battery", None: "unknown"}[cpu_power.on_ac_power]
+        print(f"CPU boost: {boost} (max now {cpu_power.current_max_mhz} MHz, hardware {cpu_power.hardware_max_mhz} MHz) | Power: {power} | Busy: {cpu_power.busy_percent}%")
+        if cpu_power.hints:
+            print("\nThings to check before measuring anything:")
+            for hint in cpu_power.hints:
+                print(f"  [{hint['id']}] {hint['detail']}")
+        else:
+            print("\nNo obvious hidden switches found. Measure before you change anything.")
 
 
 def cmd_inspect(args):
