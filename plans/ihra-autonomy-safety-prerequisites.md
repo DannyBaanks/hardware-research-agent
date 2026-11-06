@@ -240,4 +240,4 @@ Dos criterios de aceptación que el plan sólo comprobaba con fixtures se ejecut
 3. **M1 «cero evidencia escrita» al caducar** — confirmado en el propio test, no inferido: `tests/test_grant_expiry.py:111` afirma `assertFalse(self.evidence_base.exists())` junto a `executor.calls == 0`.
 4. **M0 «ningún campo de autoridad depende del llamante»** — confirmado en la frontera real: `cmd_run_tier1` (`core/cli.py:298-303`) llama a `authorize_plan_from_tty` sin `ttl_seconds` ni `clock`, y no existe ningún `add_argument` ni variable de entorno que controle TTL, reloj o grant. Ambos parámetros siguen siendo costuras de prueba in-process, que es el mismo límite que ya declara `docs/SAFETY_CONTRACTS.md`: un proceso con el mismo UID nunca estuvo dentro de la protección.
 
-Nada de esto sustituye la ronda Tier-1 consentida: demuestra el camino de denegación, no el de autorización.
+Nada de esto sustituye la ronda Tier-1 consentida: demuestra el camino de denegación, no el de autorización. Sus dos conclusiones quedaron citadas en `docs/ANTIFAKE_TEST_MATRIX.md` (filas AF-07 y AF-11) con la fecha y el método, sin cambiar la etiqueta de ninguna fila.
