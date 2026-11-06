@@ -10,8 +10,8 @@
 
 ## 1. Structure & Workflows
 * `docs/`: Master forensic case studies (`HISTORY_ADA_D3COLD.md`, `HISTORY_REA_CPU_01.md`), protocol specs (`COMMON_RESEARCH_PIPELINE.md`, `ARCHITECTURE.md`, `SAFETY_CONTRACTS.md`), and test matrices.
-* `core/`: Decoupled engine modules (`discovery.py`, `sentinel.py`, `verifier.py`, `rollback.py`, `authorization.py`, `experiment.py`, `tier1.py`, `recovery.py`, `cli.py`).
-* `adapters/`: Hardware capability detectors (`linux_inventory`, `linux_cpu_perf`, `nvidia_telemetry`, `amd_xdna_discovery`).
+* `core/`: Decoupled engine modules — `discovery.py`, `sentinel.py`, `verifier.py`, `rollback.py`, `authorization.py`, `experiment.py`, `tier1.py`, `recovery.py`, `executor.py`, `workload_runner.py`, `planning.py`, `cpu_power.py`, `cli.py`. There is no `hypothesis.py` and no `recorder.py`.
+* `adapters/`: Hardware capability detectors — the four Linux probes (`LinuxInventoryAdapter`, `LinuxCpuPerfAdapter`, `NvidiaTelemetryAdapter`, `AmdXdnaDiscoveryAdapter`) live as classes in `adapters/adapters.py`; `ada_adapter.py` and `rea_adapter.py` carry the case-study probes; `base.py` defines `HardwareAdapter` and `CapabilityStatus`.
 * `fixtures/`: Synthetic failure cases (including the Ada D3cold trap).
 * `tests/`: Automated unit and adversarial test suite.
 * **Acting as an agent:** the CLI is the only sanctioned surface. `sentinel` classifies without executing, and Tier-0 read-only commands are yours to run. Anything that changes state (`run-tier1`) must be launched by the human in their own terminal, because the authorization is theirs, not yours — you prepare it, explain the exact undo, and hand over the command line. Before proposing another campaign, run `list-faults`: an open record means the host is not where a plan said it was, and IHRA will deny execution until that record is resolved.

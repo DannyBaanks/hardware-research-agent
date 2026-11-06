@@ -82,3 +82,34 @@ The transformation of ad-hoc hardware research into a standardized, portable age
   * Perform complete privacy audit (zero personal tokens, IPs, MAC addresses, or personal usernames).
   * Request explicit human authorization from Danny before publishing.
 * **Exit Criteria:** Repository is self-contained, documented, clean, and ready for publication.
+
+---
+
+## 3. Status Against the Code on Disk (verified 2026-11-06)
+
+Sections 1 and 2 above are the plan **as written before implementation**. They are kept unedited.
+This table says which exit criteria the repository actually meets today, because two of them are
+contradicted by the evidence and one is already superseded. Nothing here should be read as
+retroactively grading a phase the plan never reached.
+
+| Phase | Status today | What was checked |
+| :--- | :--- | :--- |
+| **0** Ground truth | Done | `docs/HISTORY_ADA_D3COLD.md` and `docs/HISTORY_REA_CPU_01.md` exist and are the referenced case studies. The "zero gaps filled by hallucinated narrative" criterion is a claim about prose quality and is not mechanically re-checked here. |
+| **1** D3cold replication | Done | `fixtures/ada_d3cold_false_positive/` exists and `tests/test_d3cold_trap_detection.py` asserts the verifier issues `REFUTED`. |
+| **2** REA-CPU-01 ingestion | Done | `docs/HISTORY_REA_CPU_01.md` records the 9-run counterbalanced matrix, `NO_SAFE_WRITE_PATH_IDENTIFIED` and the XDNA kernel-versus-userspace result. |
+| **3** Schemas | Done, narrower than the wording | Both `schemas/experiment.schema.json` and `schemas/evidence.schema.json` exist, but **no runtime code loads them**. `core/sentinel.py` carries a stdlib validator whose required-key set is asserted equal to the schema's by `tests/test_sentinel_plan_validation.py`, and the comment above `EXPERIMENT_PLAN_REQUIRED` states the intent: the schema stays declarative documentation rather than a runtime dependency. Nothing in `core/` or `tests/` imports `jsonschema`, and the repository declares no third-party dependency manifest at all, so whether a plan is enforceable never depends on what a given machine happens to have installed. |
+| **4** Core engine | Partial | `discovery.py`, `sentinel.py`, `executor.py`, `rollback.py` and `verifier.py` exist, plus eight modules the plan did not name (`authorization.py`, `cli.py`, `cpu_power.py`, `experiment.py`, `planning.py`, `recovery.py`, `tier1.py`, `workload_runner.py`). **`core/hypothesis.py` and `core/recorder.py` were never created.** The parenthetical "with thermal monitoring" is false for `core/executor.py`: it contains no sensor reading and no pressure abort, which [ANTIFAKE_TEST_MATRIX](ANTIFAKE_TEST_MATRIX.md) records as `AF-10 = NOT_DEMONSTRATED`. The mock-mode exit criterion is met by `DryRunExecutor` (`core/executor.py:37`). |
+| **5** Adapters | Done, different file layout | The four detectors exist as classes inside `adapters/adapters.py` — `LinuxInventoryAdapter`, `LinuxCpuPerfAdapter`, `NvidiaTelemetryAdapter`, `AmdXdnaDiscoveryAdapter` — not as one file each. `adapters/base.py` defines `HardwareAdapter` and `CapabilityStatus`, and `CapabilityStatus.NOT_APPLICABLE` is emitted by the probes when the target is absent. `ada_adapter.py` and `rea_adapter.py` carry the two case-study probes. |
+| **6** Anti-fake suite | **Exit criterion not met** | All three named test files exist, but "100% of adversarial test cases pass" is contradicted by the status table in [ANTIFAKE_TEST_MATRIX](ANTIFAKE_TEST_MATRIX.md): `AF-02` (per-GHz normalization), `AF-09` (automatic restoration on the next launch), `AF-10` (`RESOURCE_PRESSURE_ABORT`) and `AF-12` are `NOT_DEMONSTRATED`. The suite passes; the matrix it is supposed to close does not. |
+| **7** Multi-machine portability | `NOT_DEMONSTRATED` | No run on a second architecture is recorded anywhere in this repository. [PORTABILITY_MATRIX](PORTABILITY_MATRIX.md) is a design matrix of interfaces and privileges, not evidence: it carries no dated run, host or digest. Everything executed here ran on one AMD Zen 4 mobile host with an NVIDIA Ada GPU, plus the Linux/Bubblewrap sandbox tests. |
+| **8** Public repository | Superseded — it is published | `LICENSE` is MIT. The repository is public at `DannyBaanks/hardware-research-agent`, so "request authorization before publishing" is history, and `ROADMAP.md` carries the matching `[HISTORICAL]` note. The privacy check is **not** a sealed one-time audit: it is an obligation on every commit (`AGENTS.md` §2 — zero MACs, board serials or tokens in staged files). |
+
+**What closed the safety gap the plan assumed.** Phases 3–6 as written left authorization lifetime and
+rollback coupling unspecified. That work is IHRA-04, tracked in
+[`plans/ihra-autonomy-safety-prerequisites.md`](../plans/ihra-autonomy-safety-prerequisites.md): grant
+expiry with digest binding, a statically verifiable `rollback_plan`, execution-coupled rollback evidence
+with observed status, and the human-present Tier-1 path with a blocking emergency fault state. What it
+explicitly did **not** close is listed in [SAFETY_CONTRACTS §6.5](SAFETY_CONTRACTS.md).
+
+**Next real work:** Phase 4's missing modules (`hypothesis.py`, `recorder.py` with the privacy
+sanitizer), Phase 6's four open `AF` rows, and Phase 7 on a second machine.
