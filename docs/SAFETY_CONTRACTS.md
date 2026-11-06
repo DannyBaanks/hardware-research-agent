@@ -77,4 +77,39 @@ If `verify_restoration()` returns `False`, the agent enters an **Emergency Fault
 
 ### Threat 3: Host Resource Starvation (OOM / Thrashing)
 * **Threat:** Parallel compiler bursts or heavy vector benchmarks exhaust physical memory, triggering kernel thrashing and freezing the host desktop.
-* **Mitigation:** The `ExecutionOwner` polls memory before dispatching tasks. If available memory is less than $1.5\text{ GB}$ and Swap is above $80\%$, execution is queued or aborted with `RESOURCE_PRESSURE_ABORT`.
+* **Mitigation:** The `ExecutionOwner` polls memory before dispatching tasks. If available memory is less than $1.5\text{ GB}$ and Swap is above $80\%$, execution is queued or aborted with `RESOURCE_PRESSURE_ABORT`. **Status:** not implemented; no sensor polling exists.
+
+---
+
+## 6. Authority Lifetime and Execution Coupling
+
+This is the contract IHRA-04 implements. It is a specification, not a claim about current code.
+
+### 6.1 Expiration
+
+* Authority validity is decided on a **monotonic deadline** (`time.monotonic`). Wall-clock time never participates in an authorization decision.
+* `issued_at` and `expires_at` are additionally recorded in ISO-8601 UTC inside evidence artifacts so a human can read them; those fields are reporting only.
+* `DEFAULT_TTL_SECONDS = 120` is fixed in code. It must be greater than or equal to the authorized plan's `max_total_duration` (60 s today), so a valid grant cannot expire mid-campaign while the campaign is still inside its own ceiling.
+* **TTL is not a caller-supplied parameter.** No function argument, CLI flag or environment variable may lengthen it: an agent that can choose its own TTL grants itself more time.
+
+### 6.2 Grant token
+
+* Every grant carries a token: `HMAC-SHA256(key, plan_sha256 || proposal_sha256 || issued_at)`.
+* The key is generated per process with `secrets.token_bytes(32)` and is never persisted.
+* **What the token is:** an anti-replay and self-consistency binding inside one process, so a grant cannot be reused, reordered or rebuilt from a different plan.
+* **What the token is not:** identity. A process running as the same UID can read the key from process memory. Consistent with §1.3 and with the TTY warning in `core/authorization.py`, no cryptographic human identity is claimed here.
+
+### 6.3 Digest coupling
+
+* The command that executes must be byte-identical to the command that Sentinel classified, proven through the canonical plan digest rather than through a matching string.
+* A grant is re-validated before dispatch and before every sample. Expiration is checked **before** a single-use grant is marked consumed, so an expired grant does not burn the TTY ceremony.
+
+### 6.4 Rollback coupling
+
+* `rollback_status` is derived from observed prestate and poststate reads. It is never a literal.
+* A failed prestate read denies the experiment; recording it as `None`, empty or `unknown` is forbidden, because a missing baseline silently converts "we do not know the state" into "the state was fine".
+* Restoration is verified by re-reading state; an unverified restoration is a `FAULT_STATE`, which blocks subsequent experiments until resolved.
+
+### 6.5 Known gap: real hardware writes outside this contract
+
+`experiments/cpu-boost/run_boost_matrix.py` writes `/sys/devices/system/cpu/cpufreq/boost` under `sudo`. It re-reads the knob around every job and restores it on signals, but it does so **outside** the Sentinel gate, outside `PlanAuthorization`, outside `RollbackController` and outside the campaign manifest, and its signal handler prints the read-back instead of comparing it with the captured value. `recipes/smart-boost/install.sh` installs a udev rule and a service that keep writing the same knob. Closing this is IHRA-05 work; until then this document does not describe that script.

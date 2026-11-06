@@ -85,6 +85,7 @@ The **ISyCo Hardware Research Agent (IHRA)** is a modular, security-hardened Lin
   3. Rejects any plan where `rollback_plan` is missing or unverifiable.
   4. Demands human user confirmation for Tier 1 or Tier 2 interventions.
   5. Emits an `AuthorizationGrant` with an expiration timestamp and cryptographic token.
+* **Implementation status:** Item 1 holds for the single command the gate inspects today; item 2 is enforced (`FORBIDDEN_PATTERNS`). Items 3–5 are specification only: no code loads `schemas/`, so `rollback_plan` is not yet checked; grants carry no digest, expiry or token; and Tier 1 is denied outright rather than routed to human confirmation, which is stricter than item 4 but does not implement it. IHRA-04 closes these under the contract in [Safety Contracts §6](SAFETY_CONTRACTS.md).
 
 ### 2.5 Proposed Autonomous Execution Owner (`core/executor.py`)
 * **Role:** Executes pre-compiled whitelist actions.
