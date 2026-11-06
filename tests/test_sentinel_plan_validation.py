@@ -121,7 +121,7 @@ class TestSentinelRollbackObligation(unittest.TestCase):
     def test_valid_rollback_plan_is_still_denied_without_a_human(self):
         grant = self.gate.evaluate_plan(COMPLETE_PLAN)
         self.assertEqual(grant.verdict, SentinelVerdict.DENIED)
-        self.assertIn("authenticated human authorization", grant.reason)
+        self.assertIn("unattended Tier-1 execution is disabled by decision", grant.reason)
 
     def test_verifiable_rollback_is_decided_without_executing_anything(self):
         def forbid(*args, **kwargs):

@@ -319,11 +319,13 @@ class SyntheticExperimentRunner:
         evidence_base: Optional[Path] = None,
         repository_root: Optional[Path] = None,
         rollback_contract: Optional[RollbackContract] = None,
+        fault_base: Optional[Path] = None,
     ):
         self.executor = executor or SyntheticWorkloadExecutor()
         self.evidence_base = evidence_base
         self.repository_root = repository_root or Path(__file__).resolve().parent.parent
         self.rollback_contract = rollback_contract or RollbackContract()
+        self.fault_base = fault_base
 
     @staticmethod
     def _utc_now() -> str:
@@ -506,6 +508,19 @@ class SyntheticExperimentRunner:
     ) -> ExperimentCampaignResult:
         try:
             from .planning import SyntheticExperimentProposal
+            from .recovery import FaultStateError, find_unresolved_faults
+
+            # An unresolved Tier-1 fault means the host is not where an authorized
+            # change left it, so no campaign may stack evidence on top of that.
+            try:
+                faults = find_unresolved_faults(self.fault_base)
+            except FaultStateError as exc:
+                raise AuthorizationDenied(str(exc)) from exc
+            if faults:
+                raise AuthorizationDenied(
+                    f"Emergency fault state is unresolved ({faults[0]['fault_id']}): "
+                    "restore the host and run 'resolve-fault' before any campaign"
+                )
 
             if not isinstance(plan, SyntheticExperimentPlan):
                 raise PlanValidationError("A fixed synthetic experiment plan is required")

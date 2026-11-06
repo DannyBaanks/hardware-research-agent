@@ -673,3 +673,210 @@ def inspect_synthetic_campaign(
             os.close(campaign_fd)
         if base_fd is not None:
             os.close(base_fd)
+
+
+class FaultStateError(RuntimeError):
+    """The emergency fault state could not be read, so nothing may execute."""
+
+
+# Emergency fault state (docs/SAFETY_CONTRACTS.md 5). A Tier-1 run that could not
+# put the host back writes one record here and every later campaign is denied until
+# a person resolves it. It lives beside, never inside, the campaign evidence so the
+# inspection allowlists and sealed bundles stay immutable.
+FAULT_UNRESOLVED = "UNRESOLVED"
+FAULT_RESOLVED = "RESOLVED"
+_FAULT_STATUSES = (FAULT_UNRESOLVED, FAULT_RESOLVED)
+_FAULT_ID = re.compile(r"^[0-9a-f]{32}$")
+_FAULT_FILE = re.compile(r"^([0-9a-f]{32})\.json$")
+_FAULT_FIELDS = {
+    "schema_version",
+    "fault_id",
+    "recorded_at",
+    "status",
+    "reason",
+    "rollback_status",
+    "experiment_id",
+    "campaign_id",
+    "plan_sha256",
+    "expected_state",
+    "observed_state",
+    "restoration_command",
+    "expected_restored_state",
+    "remediation",
+    "evidence_dir",
+    "resolved_at",
+    "resolved_state",
+    "resolved_profile",
+}
+_MAX_FAULT_RECORDS = 64
+
+
+def tier1_fault_base() -> Path:
+    configured = os.environ.get("XDG_STATE_HOME")
+    if configured:
+        state_home = Path(configured)
+        if not state_home.is_absolute():
+            raise FaultStateError("XDG_STATE_HOME must be absolute")
+    else:
+        state_home = Path.home() / ".local" / "state"
+    return state_home / "ihra" / "tier1-faults"
+
+
+def _open_fault_base(base: Optional[Path]) -> int:
+    root = tier1_fault_base() if base is None else Path(base)
+    try:
+        return _open_directory_path(root)
+    except FileNotFoundError:
+        return None
+    except (OSError, _InspectionError) as exc:
+        raise FaultStateError(f"Emergency fault state is unreadable: {exc}") from exc
+
+
+def _parse_fault_record(data: bytes, name: str, expected_id: str) -> Dict[str, object]:
+    record = _parse_json(data, name)
+    if set(record) != _FAULT_FIELDS:
+        raise FaultStateError(f"{name} has missing or unknown fields")
+    if record["schema_version"] != 1 or record["fault_id"] != expected_id:
+        raise FaultStateError(f"{name} identifier does not match its filename")
+    if record["status"] not in _FAULT_STATUSES:
+        raise FaultStateError(f"{name} status is outside the fault vocabulary")
+    if not isinstance(record["recorded_at"], str) or not record["recorded_at"]:
+        raise FaultStateError(f"{name} has no recording timestamp")
+    if record["campaign_id"] is not None and not _FAULT_ID.fullmatch(str(record["campaign_id"])):
+        raise FaultStateError(f"{name} references an unknown campaign")
+    for field in ("expected_state", "observed_state", "resolved_state"):
+        problem = _observed_state_issue(field, record[field])
+        if problem:
+            raise FaultStateError(f"{name}: {problem}")
+    if not isinstance(record["remediation"], list) or not all(
+        isinstance(line, str) and line for line in record["remediation"]
+    ):
+        raise FaultStateError(f"{name} remediation is not a list of commands")
+    if record["status"] == FAULT_RESOLVED and not isinstance(record["resolved_at"], str):
+        raise FaultStateError(f"{name} is resolved without a resolution timestamp")
+    if record["status"] == FAULT_UNRESOLVED and record["resolved_at"] is not None:
+        raise FaultStateError(f"{name} is unresolved but carries a resolution timestamp")
+    return record
+
+
+def find_unresolved_faults(base: Optional[Path] = None) -> List[Dict[str, object]]:
+    """Lists the faults that still deny execution, reading only."""
+    directory_fd = _open_fault_base(base)
+    if directory_fd is None:
+        return []
+    try:
+        entries = os.listdir(directory_fd)
+        names = []
+        for name in sorted(entries):
+            if name.startswith(".tmp-"):
+                continue
+            if _FAULT_FILE.fullmatch(name) is None:
+                raise FaultStateError(f"Unexpected entry in emergency fault state: {name}")
+            names.append(name)
+        if len(names) > _MAX_FAULT_RECORDS:
+            raise FaultStateError("Emergency fault state exceeds the record limit")
+        faults = []
+        for name in names:
+            try:
+                data = _read_regular_file(directory_fd, name)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise FaultStateError(f"Emergency fault record is unreadable: {name}: {exc}") from exc
+            record = _parse_fault_record(data, name, name[:32])
+            if record["status"] == FAULT_UNRESOLVED:
+                faults.append(record)
+        return faults
+    except OSError as exc:
+        raise FaultStateError(f"Emergency fault state could not be listed: {exc}") from exc
+    finally:
+        os.close(directory_fd)
+
+
+def write_fault_record(record: Dict[str, object], base: Optional[Path] = None) -> Path:
+    """Seals one emergency fault; the write path is the only mutable one here."""
+    if set(record) != _FAULT_FIELDS:
+        raise FaultStateError("Fault record has missing or unknown fields")
+    if not _FAULT_ID.fullmatch(str(record["fault_id"])):
+        raise FaultStateError("Fault identifier must be a 32-character hexadecimal campaign id")
+    root = tier1_fault_base() if base is None else Path(base)
+    try:
+        os.makedirs(root, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        raise FaultStateError(f"Emergency fault state cannot be created: {exc}") from exc
+    target = root / f"{record['fault_id']}.json"
+    temp = root / f".tmp-{record['fault_id']}-{os.getpid()}"
+    data = json.dumps(
+        record, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+    ).encode("ascii") + b"\n"
+    try:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb", closefd=True) as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temp, target)
+        directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError as exc:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise FaultStateError(f"Emergency fault record could not be written: {exc}") from exc
+    return target
+
+
+def resolve_fault(
+    fault_id: str,
+    observed_state,
+    observed_profile,
+    resolved_at: str,
+    base: Optional[Path] = None,
+) -> Dict[str, object]:
+    """Closes an emergency fault, but only against the state the campaign owed.
+
+    The caller supplies a fresh observation taken after the remediation commands;
+    this function never runs anything itself, so a resolution is a claim the host
+    has been verified to be back where the fault found it.
+    """
+    if not _FAULT_ID.fullmatch(str(fault_id)):
+        raise FaultStateError("Invalid fault identifier")
+    directory_fd = _open_fault_base(base)
+    if directory_fd is None:
+        raise FaultStateError("No emergency fault state exists")
+    name = f"{fault_id}.json"
+    try:
+        try:
+            data = _read_regular_file(directory_fd, name)
+        except FileNotFoundError as exc:
+            raise FaultStateError(f"No emergency fault record is stored for {fault_id}") from exc
+        except OSError as exc:
+            raise FaultStateError(f"Emergency fault record is unreadable: {exc}") from exc
+        record = _parse_fault_record(data, name, fault_id)
+        if record["status"] == FAULT_RESOLVED:
+            return record
+        if observed_profile is None or observed_profile != record["expected_restored_state"]:
+            raise FaultStateError(
+                "Fault stays unresolved: the power profile is "
+                f"{observed_profile!r}, not the restored state "
+                f"{record['expected_restored_state']!r}"
+            )
+        if record["expected_state"] is not None and observed_state != record["expected_state"]:
+            differences = _state_differences(record["expected_state"], observed_state)
+            raise FaultStateError(
+                "Fault stays unresolved: the monitored state still differs ("
+                + ", ".join(str(item["field"]) for item in differences)
+                + ")"
+            )
+        record["status"] = FAULT_RESOLVED
+        record["resolved_at"] = resolved_at
+        record["resolved_state"] = observed_state
+        record["resolved_profile"] = observed_profile
+    finally:
+        os.close(directory_fd)
+    write_fault_record(record, base=base)
+    return record

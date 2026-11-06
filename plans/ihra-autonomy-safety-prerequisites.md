@@ -3,6 +3,8 @@
 ## Estado
 READY — 6 milestones (M0–M5). Baseline verificado 2026-11-05: rama `main`, HEAD `a7ce064`, árbol limpio, `python3 -m unittest discover -s tests` → **143 tests OK** (≈5.9 s). `powerprofilesctl` presente (`/usr/bin/powerprofilesctl`, perfil actual `performance`); `bwrap` presente.
 
+**Avance 2026-11-06:** M0–M4 implementados y comiteados (ver *Registro de ejecución*); queda M5 (docs). Suite: **191 tests OK**; `sentinel lscpu` → AUTHORIZED exit 0; `sentinel 'powerprofilesctl set balanced'` → DENIED exit 1. La ronda Tier-1 real con humano al TTY sigue pendiente de ejecutarse.
+
 ## Objetivo
 
 Cerrar la distancia entre lo que `docs/` prometen y lo que `core/` exige, porque sin expiración de autoridad y sin rollback verificado acoplado a la ejecución ningún modo desatendido es defendible. Hoy `core/sentinel.py:105-110` se auto-declare bloqueado: *"State changes are disabled: authenticated human authorization and an execution-coupled verified rollback are not implemented"*.
@@ -186,3 +188,30 @@ Ronda Tier-1 real (M4, con el propietario al TTY): lanzar el comando Tier-1 en u
 
 - **Primer paso:** Registrar el baseline y escribir la §6 de `docs/SAFETY_CONTRACTS.md` con el contrato de expiración y del límite del token, sin tocar `core/` (M0).
 - **Comando inicial:** `cd "$HOME/Development/ISyCo Git/hardware-research-agent" && python3 -m unittest discover -s tests -v && git log -1 --oneline`
+
+## Registro de ejecución
+
+Ejecutado 2026-11-05 → 2026-11-06. Un commit por milestone, sin push.
+
+| Milestone | Commit | Evidencia |
+|---|---|---|
+| M0 | `099b524` | baseline 143 OK + contrato de expiración/rollback en `docs/` |
+| M1 | `29629cc` | `tests/test_grant_expiry.py` (expiry, orden expiración→`_used`, token) |
+| M2 | `9ec0d11` | `tests/test_sentinel_plan_validation.py` (validador stdlib ≡ schema) |
+| M3 | `d6bc601` | `tests/test_campaign_rollback.py` (9) + allowlists de `recovery.py` |
+| M4 | este commit | `tests/test_tier1_safety.py` (9); suite completa 191 OK |
+| M5 | pendiente | docs honestos + cierre de IHRA-03 M5 |
+
+Desviaciones respecto al plan (todas más estrictas o de alcance menor, nunca más permisivas):
+
+1. **M2** — La obligación de plan completo y verificable se aplica al tier **derivado** 1, y la denegación se registra en ese tier derivado, no en el solicitado por el llamante.
+2. **M2** — `core/executor.py` conserva su `rollback_status` fijo: pertenece a `DryRunReceipt` (`simulation_only=True`, `hardware_accessed=False`). El estado observado por una campaña real vive en la evidencia de M3.
+3. **M3** — Los tres artefactos nuevos se nombran sin prefijo `sample-` y el allowlist de `core/recovery.py` se extendió en el mismo commit. `tests/test_campaign_recovery.py` sólo los emite con `modern=True` para que las ocho campañas históricas sigan `INCOMPLETE` sin reescribir evidencia.
+4. **M4** — `evaluate_tier1()` es un método **nuevo**: `evaluate_plan(self, plan)` conserva su firma exacta (`tests/test_antifake_sentinel.py` exige `TypeError` ante kwargs) y sigue negando Tier-1, así que el modo desatendido no se ensancha.
+5. **M4** — Tier-1 no tiene artefacto `proposal`, así que la ceremonia liga el digest del plan también en el slot del proposal y añade un tercer digest, `intervention_sha256`, derivado de los bytes de la intervención declarada en el plan.
+6. **M4** — La evidencia Tier-1 se escribe en `state/ihra/tier1-experiments` y los fallos en `state/ihra/tier1-faults` (árboles hermanos del árbol sintético), de modo que las allowlists de M3 y los manifiestos históricos quedan intactos. Consecuencia: `inspect-synthetic-campaign` no inspecciona bundles Tier-1, así que AF-09 sigue `NOT_DEMONSTRATED` y M5 lo documenta.
+7. **M4** — Sólo las campañas Tier-1 escriben registros de estado de fallo. Una deriva no declarada observada por una campaña sintética se registra pero no bloquea la siguiente: no hay evidencia de que la campaña la causara. Ambos runners sí consultan `find_unresolved_faults()` antes de ejecutar.
+8. **M4** — `PlanAuthorization.binds()` exige ahora que el slot de intervención coincida también en presencia (antes un grant ligado a una intervención pasaba un `binds()` genérico). `consume()` ya lo exigía.
+9. **M4** — `SentinelGate.verify_grant()` sigue siendo la revalidación del tier 0: un grant Tier-1 no la pasa y falla cerrado. La autoridad Tier-1 se revalida consumiendo el grant contra los tres digest.
+10. **M4** — Cambió el texto de la razón de Sentinel para Tier-1 (dos aserciones actualizadas a propósito en el mismo commit). El texto viejo afirmaba que expiry y rollback no existían, lo cual es falso desde M1/M3; el nuevo niega el mismo camino y añade que el bloqueo es una decisión.
+11. **Operativo** — Con un estado de fallo sin resolver quedan denegadas todas las campañas, incluidas las de la suite de pruebas, hasta que una persona ejecute la remediación y `resolve-fault`.

@@ -71,7 +71,7 @@ class TestAntiFakeSentinel(unittest.TestCase):
             self.sentinel.evaluate_plan(plan, has_human_approval=True)
         grant = self.sentinel.evaluate_plan(plan)
         self.assertEqual(grant.verdict, SentinelVerdict.DENIED)
-        self.assertIn("authenticated human authorization", grant.reason)
+        self.assertIn("unattended Tier-1 execution is disabled by decision", grant.reason)
 
     def test_mismatched_caller_risk_tier_is_denied(self):
         grant = self.evaluate("lscpu", risk_tier=3)

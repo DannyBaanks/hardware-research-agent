@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
+from .authorization import PlanAuthorization
 from .rollback import RollbackController
 
 
@@ -22,6 +23,15 @@ class SentinelVerdict(Enum):
 # who holds it, and a same-UID process can read it out of memory.
 _GRANT_KEY = secrets.token_bytes(32)
 GRANT_TTL_SECONDS = 120
+
+# The single state change IHRA can ever be granted, and only with a human at the TTY.
+_TIER1_PROFILE_COMMAND = re.compile(
+    r"^powerprofilesctl\s+set\s+(?:power-saver|balanced|performance)$"
+)
+TIER1_REVIEW_REASON = (
+    "State changes require a live local TTY authorization bound to this exact plan "
+    "and rollback; unattended Tier-1 execution is disabled by decision, not by omission"
+)
 
 
 def canonical_plan_digest(plan: Dict[str, Any]) -> Optional[str]:
@@ -37,6 +47,44 @@ def canonical_plan_digest(plan: Dict[str, Any]) -> Optional[str]:
 def _grant_token(plan_sha256: str, experiment_id: str, deadline: float) -> str:
     message = f"{plan_sha256}\0{experiment_id}\0{deadline!r}".encode("ascii")
     return hmac.new(_GRANT_KEY, message, hashlib.sha256).hexdigest()
+
+
+def tier1_intervention(plan: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The exact host change a tier-1 plan performs, plus what is owed to undo it.
+
+    Derived only from bytes the plan already declared: the caller cannot hand the
+    gate a friendlier intervention than the one a human was shown.
+    """
+    workload = plan.get("workload")
+    command = workload.get("command") if isinstance(workload, dict) else None
+    if not isinstance(command, str) or not _TIER1_PROFILE_COMMAND.fullmatch(command):
+        return None
+    rollback = plan.get("rollback_plan")
+    if not isinstance(rollback, dict) or rollback_plan_issues(rollback):
+        return None
+    profile = command.split()[-1]
+    if rollback["expected_restored_state"] not in RollbackController.PROFILES:
+        return None
+    return {
+        "applied_command": command,
+        "target_profile": profile,
+        "restoration_command": rollback["restoration_command"],
+        "verification_query": rollback["verification_query"],
+        "expected_restored_state": rollback["expected_restored_state"],
+    }
+
+
+def tier1_intervention_digest(plan: Dict[str, Any]) -> Optional[str]:
+    intervention = tier1_intervention(plan)
+    if intervention is None:
+        return None
+    return hashlib.sha256(_canonical_intervention_bytes(intervention)).hexdigest()
+
+
+def _canonical_intervention_bytes(intervention: Dict[str, Any]) -> bytes:
+    return json.dumps(
+        intervention, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+    ).encode("ascii")
 
 
 @dataclass
@@ -201,9 +249,7 @@ class SentinelGate:
         ("powerprofilesctl", "get"),
         ("nvidia-smi",),
     }
-    TIER1_PROFILE_COMMAND = re.compile(
-        r"^powerprofilesctl\s+set\s+(?:power-saver|balanced|performance)$"
-    )
+    TIER1_PROFILE_COMMAND = _TIER1_PROFILE_COMMAND
     FORBIDDEN_PATTERNS = (
         re.compile(r"\b(flashrom|nvramtool|fwupdtool|wrmsr|rdmsr)\b", re.IGNORECASE),
         re.compile(r"\b(0x03b10[a-f0-9]+|smn|smu)(?:_write|_message)?\b", re.IGNORECASE),
@@ -222,9 +268,23 @@ class SentinelGate:
             allowed_operations=[],
         )
 
-    def evaluate_plan(self, plan: Dict[str, Any]) -> AuthorizationGrant:
+    def _review_static(
+        self, plan: Dict[str, Any]
+    ) -> Tuple[Optional[AuthorizationGrant], Optional[str], Optional[str], Optional[int], Optional[str]]:
+        """Applies every rule that does not depend on who is asking.
+
+        The returned denial is what an unattended caller is given. A Tier-1 plan
+        still has to pass the human leg in evaluate_tier1() before anything runs,
+        so nothing here may execute or grant.
+        """
         if not isinstance(plan, dict):
-            return self._deny("UNKNOWN_EXP", 3, "Experiment plan must be an object")
+            return (
+                self._deny("UNKNOWN_EXP", 3, "Experiment plan must be an object"),
+                None,
+                None,
+                None,
+                None,
+            )
 
         exp_id = plan.get("experiment_id", "UNKNOWN_EXP")
         if not isinstance(exp_id, str) or not exp_id:
@@ -232,20 +292,46 @@ class SentinelGate:
 
         plan_digest = canonical_plan_digest(plan)
         if plan_digest is None:
-            return self._deny(exp_id, 3, "Plan is not canonically serializable")
+            return (
+                self._deny(exp_id, 3, "Plan is not canonically serializable"),
+                None,
+                None,
+                None,
+                None,
+            )
 
         workload = plan.get("workload")
         command = workload.get("command") if isinstance(workload, dict) else None
         if not isinstance(command, str) or not command or "\x00" in command:
-            return self._deny(exp_id, 3, "Plan must contain a non-empty command string")
+            return (
+                self._deny(exp_id, 3, "Plan must contain a non-empty command string"),
+                None,
+                None,
+                None,
+                None,
+            )
 
         try:
             argv = tuple(shlex.split(command, posix=True))
         except ValueError:
-            return self._deny(exp_id, 3, "Malformed command string")
+            return (
+                self._deny(exp_id, 3, "Malformed command string"),
+                None,
+                None,
+                None,
+                None,
+            )
 
         if any(pattern.search(command) for pattern in self.FORBIDDEN_PATTERNS):
-            return self._deny(exp_id, 3, "Command matches a forbidden hardware or destructive-operation rule")
+            return (
+                self._deny(
+                    exp_id, 3, "Command matches a forbidden hardware or destructive-operation rule"
+                ),
+                None,
+                None,
+                None,
+                None,
+            )
 
         requested_tier = plan.get("risk_tier")
         if requested_tier is not None and (
@@ -253,7 +339,13 @@ class SentinelGate:
             or not isinstance(requested_tier, int)
             or requested_tier not in range(4)
         ):
-            return self._deny(exp_id, 3, "risk_tier must be an integer from 0 to 3")
+            return (
+                self._deny(exp_id, 3, "risk_tier must be an integer from 0 to 3"),
+                None,
+                None,
+                None,
+                None,
+            )
 
         if argv in self.READ_ONLY_COMMANDS and command == " ".join(argv):
             derived_tier = 0
@@ -263,10 +355,16 @@ class SentinelGate:
             derived_tier = 3
 
         if requested_tier is not None and requested_tier != derived_tier:
-            return self._deny(
-                exp_id,
-                derived_tier,
-                f"Caller-supplied risk_tier does not match the command's derived tier ({derived_tier})",
+            return (
+                self._deny(
+                    exp_id,
+                    derived_tier,
+                    f"Caller-supplied risk_tier does not match the command's derived tier ({derived_tier})",
+                ),
+                None,
+                None,
+                None,
+                None,
             )
 
         if derived_tier == 1:
@@ -275,12 +373,25 @@ class SentinelGate:
             # both load-bearing before a human is even asked (SAFETY_CONTRACTS.md 2, 4).
             issues = experiment_plan_issues(plan)
             if issues:
-                return self._deny(
-                    exp_id,
-                    1,
-                    "State-changing plan must be a complete, verifiable experiment plan: "
-                    + "; ".join(issues),
+                return (
+                    self._deny(
+                        exp_id,
+                        1,
+                        "State-changing plan must be a complete, verifiable experiment plan: "
+                        + "; ".join(issues),
+                    ),
+                    None,
+                    None,
+                    None,
+                    None,
                 )
+
+        return None, exp_id, plan_digest, derived_tier, command
+
+    def evaluate_plan(self, plan: Dict[str, Any]) -> AuthorizationGrant:
+        denial, exp_id, plan_digest, derived_tier, command = self._review_static(plan)
+        if denial is not None:
+            return denial
 
         if derived_tier == 0:
             issued_at = time.monotonic()
@@ -298,13 +409,62 @@ class SentinelGate:
             )
 
         if derived_tier == 1:
+            return self._deny(exp_id, 1, TIER1_REVIEW_REASON)
+
+        return self._deny(exp_id, 3, "Command is not on the exact read-only allowlist")
+
+    def evaluate_tier1(
+        self, plan: Dict[str, Any], authorization: Optional[PlanAuthorization]
+    ) -> AuthorizationGrant:
+        """Opens the Tier-1 leg, and only for a live authorization minted at a TTY.
+
+        evaluate_plan() denies every Tier-1 plan; this method is the second half of
+        the contract and refuses unless a person already confirmed these exact
+        bytes. Tier 1 has no separate proposal artifact, so the ceremony binds the
+        plan digest in the proposal slot as well as in the plan slot.
+        """
+        denial, exp_id, plan_digest, derived_tier, _ = self._review_static(plan)
+        if denial is not None:
+            return denial
+        if derived_tier != 1:
+            return self._deny(
+                exp_id, derived_tier, "Tier-1 review requires a tier-1 state-changing plan"
+            )
+
+        intervention_digest = tier1_intervention_digest(plan)
+        if intervention_digest is None:
+            return self._deny(exp_id, 1, "Tier-1 plan declares no verifiable intervention")
+
+        if type(authorization) is not PlanAuthorization:
+            return self._deny(exp_id, 1, TIER1_REVIEW_REASON)
+        if authorization.expired():
+            return self._deny(exp_id, 1, "Local TTY authorization has expired")
+        if authorization.used:
+            return self._deny(exp_id, 1, "Local TTY authorization has already been used")
+        if not authorization.binds(plan_digest, plan_digest, intervention_digest):
             return self._deny(
                 exp_id,
                 1,
-                "State changes are disabled: authenticated human authorization and an execution-coupled verified rollback are not implemented",
+                "Local TTY authorization is not bound to this exact plan and intervention",
             )
 
-        return self._deny(exp_id, 3, "Command is not on the exact read-only allowlist")
+        intervention = tier1_intervention(plan)
+        issued_at = time.monotonic()
+        deadline = issued_at + authorization.remaining_seconds()
+        return AuthorizationGrant(
+            verdict=SentinelVerdict.AUTHORIZED,
+            experiment_id=exp_id,
+            risk_tier=1,
+            reason="Local TTY authorization binds this exact plan digest and intervention",
+            allowed_operations=[
+                intervention["applied_command"],
+                intervention["restoration_command"],
+            ],
+            plan_sha256=plan_digest,
+            issued_at=issued_at,
+            expires_at=deadline,
+            grant_token=_grant_token(plan_digest, exp_id, deadline),
+        )
 
     def verify_grant(
         self, grant: AuthorizationGrant, plan: Dict[str, Any], clock=time.monotonic

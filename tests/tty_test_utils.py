@@ -15,6 +15,7 @@ def authorize_in_pty(
     capture=False,
     ttl_seconds=None,
     clock=None,
+    intervention_sha256=None,
 ):
     master_fd, slave_fd = pty.openpty()
     expected = f"AUTHORIZE {plan_sha256}"
@@ -47,6 +48,8 @@ def authorize_in_pty(
         issued["ttl_seconds"] = ttl_seconds
     if clock is not None:
         issued["clock"] = clock
+    if intervention_sha256 is not None:
+        issued["intervention_sha256"] = intervention_sha256
     try:
         with patch("core.authorization.os.open", return_value=os.dup(slave_fd)):
             result = authorize_plan_from_tty(

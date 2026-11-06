@@ -16,13 +16,14 @@ from pathlib import Path
 from .discovery import HardwareDiscovery
 from .cpu_power import CpuPowerInspector
 from .authorization import AuthorizationDenied, authorize_plan_from_tty
-from .sentinel import SentinelGate, SentinelVerdict
+from .sentinel import SentinelGate, SentinelVerdict, canonical_plan_digest, tier1_intervention_digest
+from .tier1 import Tier1ExperimentRunner, build_tier1_plan
+from .recovery import FaultStateError, find_unresolved_faults, inspect_synthetic_campaign
 from .verifier import AntiFakeVerifier, VerificationVerdict
 from .rollback import RollbackController
 from .executor import DryRunExecutor, SyntheticWorkloadExecutor
 from .experiment import SyntheticExperimentPlan, SyntheticExperimentRunner
 from .planning import ProposalValidationError, SyntheticExperimentProposal
-from .recovery import inspect_synthetic_campaign
 from adapters.adapters import (
     LinuxInventoryAdapter,
     LinuxCpuPerfAdapter,
@@ -260,6 +261,90 @@ def cmd_inspect_synthetic_campaign(args):
         sys.exit(1)
 
 
+def _load_tier1_plan(args):
+    if bool(args.plan) == bool(args.set_profile):
+        raise ValueError("run-tier1 needs exactly one of --plan or --set")
+    if args.plan:
+        plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+        if not isinstance(plan, dict):
+            raise ValueError("Tier-1 plan must be a JSON object")
+        return plan
+    return build_tier1_plan(
+        args.set_profile, RollbackController().capture_state("powerprofilesctl get")
+    )
+
+
+def cmd_run_tier1(args):
+    try:
+        plan = _load_tier1_plan(args)
+    except (OSError, ValueError, json.JSONDecodeError, UnicodeError) as exc:
+        print(json.dumps({"status": "DENIED", "verdict": "DENY", "reason": str(exc)}))
+        sys.exit(2)
+
+    # The same bytes are judged twice on purpose: what an unattended caller is
+    # told, and what a human at this TTY is asked to confirm.
+    unattended = SentinelGate().evaluate_plan(plan)
+    intervention_digest = tier1_intervention_digest(plan)
+    if intervention_digest is None:
+        reason = unattended.reason if unattended.verdict is SentinelVerdict.DENIED else (
+            "Plan declares no verifiable Tier-1 intervention"
+        )
+        print(json.dumps({"status": "DENIED", "verdict": "DENY", "reason": reason}, indent=2))
+        sys.exit(1)
+
+    plan_digest = canonical_plan_digest(plan)
+    summary = json.dumps(plan, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    try:
+        authorization = authorize_plan_from_tty(
+            plan_digest,
+            plan_digest,
+            summary,
+            intervention_sha256=intervention_digest,
+        )
+    except (OSError, AuthorizationDenied) as exc:
+        print(json.dumps({"status": "DENIED", "verdict": "DENY", "reason": str(exc)}))
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print(json.dumps({
+            "status": "DENIED",
+            "verdict": "DENY",
+            "reason": "TTY authorization cancelled",
+        }))
+        sys.exit(130)
+
+    result = Tier1ExperimentRunner().run(plan, authorization)
+    output = result.to_dict()
+    output["unattended_review"] = {
+        "verdict": unattended.verdict.value,
+        "reason": unattended.reason,
+    }
+    print(json.dumps(output, indent=2))
+    if result.verdict != "DEMONSTRATED":
+        sys.exit(1)
+
+
+def cmd_list_faults(args):
+    try:
+        faults = find_unresolved_faults()
+    except FaultStateError as exc:
+        print(json.dumps({"status": "DENIED", "verdict": "DENY", "reason": str(exc)}, indent=2))
+        sys.exit(1)
+    print(json.dumps({"unresolved_faults": faults, "count": len(faults)}, indent=2))
+    if faults:
+        sys.exit(1)
+
+
+def cmd_resolve_fault(args):
+    try:
+        record = Tier1ExperimentRunner().resolve(args.fault_id)
+    except (OSError, ValueError, FaultStateError) as exc:
+        print(json.dumps({"status": "DENIED", "verdict": "DENY", "reason": str(exc)}, indent=2))
+        sys.exit(1)
+    print(json.dumps(record, indent=2, sort_keys=True))
+    if record["status"] != "RESOLVED":
+        sys.exit(1)
+
+
 def cmd_setup(args):
     """Checks and reports repository and toolchain status for agents."""
     base_dir = Path.home() / "Development"
@@ -386,6 +471,36 @@ def main():
         help="Campaign UUID from the evidence directory; arbitrary paths are rejected",
     )
     p_inspect_campaign.set_defaults(func=cmd_inspect_synthetic_campaign)
+
+    # tier1
+    p_tier1 = subparsers.add_parser(
+        "run-tier1",
+        help="Run one reversible profile change under a live TTY authorization; never unattended",
+    )
+    p_tier1.add_argument("--plan", help="Path to a strict JSON Tier-1 plan file")
+    p_tier1.add_argument(
+        "--set",
+        dest="set_profile",
+        metavar="PROFILE",
+        help="Build the plan for one change to PROFILE and read the way back from this host",
+    )
+    p_tier1.set_defaults(func=cmd_run_tier1)
+
+    p_faults = subparsers.add_parser(
+        "list-faults",
+        help="List unresolved emergency fault records read-only; exit 1 when any remains",
+    )
+    p_faults.set_defaults(func=cmd_list_faults)
+
+    p_resolve = subparsers.add_parser(
+        "resolve-fault",
+        help="Verify the host against a fault record and close it; this never changes the host",
+    )
+    p_resolve.add_argument(
+        "fault_id",
+        help="Fault identifier from the emergency fault state; arbitrary paths are rejected",
+    )
+    p_resolve.set_defaults(func=cmd_resolve_fault)
 
     # setup
     p_setup = subparsers.add_parser("setup", help="Verify stack paths and dependencies")
