@@ -1,11 +1,13 @@
 # Plan — IHRA-04: Prerrequisitos de seguridad para autonomía (expiración de autoridad + rollback verificado acoplado a la ejecución)
 
 ## Estado
-READY → **EJECUTADO** — 6 milestones (M0–M5) implementados, probados y comiteados entre 2026-11-05 y 2026-11-06 (ver *Registro de ejecución*); sin push. Baseline verificado 2026-11-05: rama `main`, HEAD `a7ce064`, árbol limpio, `python3 -m unittest discover -s tests` → **143 tests OK** (≈5.9 s). `powerprofilesctl` presente (`/usr/bin/powerprofilesctl`, perfil actual `performance`); `bwrap` presente.
+READY → **EJECUTADO** — 6 milestones (M0–M5) implementados, probados y comiteados entre 2026-11-05 y 2026-11-06 (ver *Registro de ejecución*); **publicado en `34fa619` el 2026-11-06T15:24Z** (ver *Push a origin/main*); hasta ese momento la rama local nunca se había empujado. Baseline verificado 2026-11-05: rama `main`, HEAD `a7ce064`, árbol limpio, `python3 -m unittest discover -s tests` → **143 tests OK** (≈5.9 s). `powerprofilesctl` presente (`/usr/bin/powerprofilesctl`, perfil actual `performance`); `bwrap` presente.
 
 **Avance 2026-11-06:** M0–M5 implementados y comiteados (ver *Registro de ejecución*). Suite: **191 tests OK**; `sentinel lscpu` → AUTHORIZED exit 0; `sentinel 'powerprofilesctl set balanced'` → DENIED exit 1. La documentación dejó de prometer lo que el código no hace: `AF-09`, `AF-02`, `AF-10` y `AF-12` constan como NO demostrados, y `run_boost_matrix.py` aparece en README/TECHNICAL/SAFETY_CONTRACTS como herramienta manual fuera del contrato. La **ronda Tier-1 real con humano al TTY** — la verificación que pidió Danny y que no se puede sustituir con fixtures — **se ejecutó el 2026-11-06T08:06Z y cumplió todos sus criterios** (ver *Ronda Tier-1 real consentida*). Los **dos ítems opcionales** que quedaban demostrados sólo por tests también se cerraron sobre el host real el mismo día (ver *Ronda Tier-1 completa y gate de fault en el host*): el recuento de repeticiones honrado en vivo (`samples_completed: 3` en dos bundles) y la negativa de campaña contra un `fault.json` sin resolver, seguida de una resolución que verifica el host. La verificación del plan queda completa sin ítems pendientes; quedan abiertos, como trabajo de IHRA-05, los casos `SIGKILL` y el supervisor de arranque (AF-09 `NOT_DEMONSTRATED`) más dos defectos nuevos registrados en *Hallazgos abiertos*.
 
 **Avance 2026-11-06 (tarde):** F1 y F2 de *Hallazgos abiertos* quedaron cerrados en el código (`7600c3b` y `7d55e32`, suite en 196 tests OK); F3 sigue abierto y la comprobación humana del drenado de cola sigue pendiente del terminal de Danny. Detalle y límites en *Cierre de F1 y F2*.
+
+**Avance 2026-11-06 (push):** `main` se publicó en `34fa619` (`a7ce064..34fa619`, fast-forward, sin force) y un clon tomado de GitHub — no del repo local — corre limpio con una `HOME` inventada: `setup` exit 0 y **196 tests OK, skipped=1**. Ver *Push a origin/main*.
 
 **Avance 2026-11-06 (noche):** el repo dejó de depender de las carpetas de esta máquina. `setup` resuelve ahora el propio checkout y los dos acompañantes por `REA_HOME` / `ADA_UNLOCK_HOME` (`f6a4eff`, medido sobre `eeec9a9`, mismo árbol), y se fueron las últimas rutas literales de un test, de un doc y de este plan. Verificado con un clon en `HOME` inventada: `setup` exit 0 y suite **196 OK, skipped=1** — el test que necesita el fork se salta solo en lugar de fallar. Detalle, límites y el caveat de que el historial publicado conserva las cadenas antiguas, en *Rutas de esta máquina fuera del repo*. **Pendiente de decisión del dueño:** la corrección de F3 y la de F4, más la reescritura del historial si se quiere que ni los blobs viejos guarden la ruta.
 
@@ -195,7 +197,7 @@ Ronda Tier-1 real (M4, con el propietario al TTY): lanzar el comando Tier-1 en u
 
 ## Registro de ejecución
 
-Ejecutado 2026-11-05 → 2026-11-06. Un commit por milestone, sin push.
+Ejecutado 2026-11-05 → 2026-11-06. Un commit por milestone, sin push durante la ejecución; el push llegó después, el 2026-11-06T15:24Z (ver *Push a origin/main*).
 
 | Milestone | Commit | Evidencia |
 |---|---|---|
@@ -322,7 +324,7 @@ Comando en las tres: `python3 -m core.cli run-tier1 --set performance`, con la l
 
 **F3 sigue abierto** (documental: nombrar `differences`/`poststate` en el contrato).
 
-Suite tras ambos commits: **196 tests OK**, exit 0 (10.76 s, host real). Sin push.
+Suite tras ambos commits: **196 tests OK**, exit 0 (10.76 s, host real). Sin push entonces; `main` se publicó el 2026-11-06T15:24Z (ver *Push a origin/main*).
 
 ## Corrección a F2 y ronda consentida de las 12:48Z — escrita al leer el transcript de Danny
 
@@ -373,3 +375,13 @@ Crudo preservado y sellado: `~/.local/state/ihra/verification-logs/ihra-f2-paste
 **Pendiente de decisión del dueño:** reescritura del historial y visibilidad del correo en `package.json`; siguen en pie la corrección de **F3** (documental) y la de **F4** (`_check_private_directory` en `_open_fault_base`), sin autorizar.
 
 **Nota de método, enmienda a mí mismo.** El barrido que acompañaba a esta limpieza encontró la ruta en el propio plan: al enumerar el "antes" de cada cambio lo cité textual y con usuario, que es exactamente lo que se pidió quitar. La corrección va aquí, no sobre el crudo: el log sellado `ihra-path-cleanup-and-clean-clone-check-2026-11-06.log` (`93b55908…`, entrada 13) conserva el barrido de las 14:58Z con las cinco líneas, y el segundo log `ihra-path-cleanup-resweep-2026-11-06.log` (`162b78e5…`, entrada 14) y el barrido definitivo en `ihra-path-cleanup-resweep2-2026-11-06.log` (`193c0c7c…`, entrada 15) deja el barrido definitivo. Regla práctica para quien haga este trabajo: **un doc que enumera rutas prohibidas no puede citarlas literales**, se describen.
+
+## Push a origin/main — 2026-11-06T15:24Z, pedido por Danny ("actualiza el README y pushea")
+
+**Publicado.** `git push origin main` ⇒ `a7ce064..34fa619`, fast-forward, **sin force**, exit 0; después del fetch `adelante=0 detras=0` y `git ls-remote` confirma `34fa619…` en `refs/heads/main`. Son 29 commits: los 28 de la limpieza más `34fa619 docs(readme): list setup…`, que añade a la tabla de comandos útiles la fila de `setup` — la única orden del CLI que la tabla no mencionaba y precisamente la que responde "¿qué encontró y dónde?" sin tocar el sistema, en `README.md` y `README_es.md`.
+
+**Comprobado desde GitHub, no desde el repo local.** `git clone https://github.com/DannyBaanks/hardware-research-agent.git` a un temporal con `HOME` inventada vacía y `XDG_STATE_HOME` dentro de ella, sobre HEAD `34fa619`: `grep` del usuario de esta máquina, de la home de root, del nombre de host y de la carpeta personal del monorepo ⇒ **0 coincidencias**; `grep` de cualquier home absoluta ⇒ 1 línea, el detector que `docs/SAFETY_CONTRACTS.md:88` manda pasar a mano antes de publicar. `python3 -m core.cli setup` ⇒ exit 0, con IHRA apuntando al clon y los dos acompañantes resueltos dentro de la `HOME` inventada con `exists: false`. `python3 -m unittest discover -s tests` ⇒ **Ran 196 tests, OK (skipped=1)**, exit 0 (10.833 s). Escaneo previo al push del rango `origin/main..HEAD`: 0 coincidencias de claves privadas, tokens de lease, API keys o MAC; en el árbol de `HEAD` sólo `package.json` conserva el correo del autor, que es decisión del dueño y no una ruta.
+
+**El caveat del historial, ya medido.** El push limpia el *tip*, no lo publicado antes. De los 55 commits que ahora hay en `origin/main`, **53** siguen conteniendo la ruta con usuario (la vieja línea de `tests/test_adapters_extended.py` en sus árboles); en `HEAD` está ausente. Quien clone se lleva el tip limpio; quien busque en historia la ve. Sacarla exige reescribir `main` y forzar el push compartido: **no hecho**.
+
+**Lo que esta verificación no cubre.** El clon se probó en esta misma máquina, sin `REA_HOME` ni `ADA_UNLOCK_HOME`: queda sin ejemplo en vivo el camino "acompañantes presentes" para un tercero, y no hay release de GitHub ni tag ni CI en el repo (`.github/workflows` no existe), así que nada comprueba el clon por nosotros en cada push. Crudo y sello: `~/.local/state/ihra/verification-logs/ihra-push-and-github-clone-verification-2026-11-06.log` (`4a1bff78…`, entrada 16, `sha256sum -c` exit 0).
