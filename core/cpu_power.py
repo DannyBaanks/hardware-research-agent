@@ -134,6 +134,44 @@ def boost_owners(root: str = "", check_services: bool = True) -> List[Dict[str, 
     return owners
 
 
+CPUFREQ_BASE = "/sys/devices/system/cpu/cpu0/cpufreq"
+# The surface a Tier 1 intervention can leave changed. Deliberately excludes load
+# and clock readings: those move on their own and would report drift nobody caused.
+MONITORED_STATE_FIELDS = (
+    "scaling_driver",
+    "governor",
+    "energy_performance_preference",
+    "boost_enabled",
+    "boost_control",
+    "platform_profile",
+)
+
+
+def monitored_state(root: str = "") -> Dict[str, object]:
+    """Reads the monitored CPU power surface. Read-only, and it never sleeps.
+
+    Unlike the discovery helpers an unreadable surface is an error, not a None:
+    a campaign that cannot observe the host state cannot claim it changed nothing.
+    """
+    base = root + CPUFREQ_BASE
+    try:
+        os.listdir(base)
+    except OSError as exc:
+        raise OSError(f"CPU power surface is unreadable at {base}: {exc}") from exc
+    path, on, _ = boost_switch(root)
+    state = {
+        "scaling_driver": _read(base + "/scaling_driver"),
+        "governor": _read(base + "/scaling_governor"),
+        "energy_performance_preference": _read(base + "/energy_performance_preference"),
+        "boost_enabled": None if path is None else _read(root + path) == on,
+        "boost_control": path,
+        "platform_profile": _read(root + "/sys/firmware/acpi/platform_profile"),
+    }
+    if all(state[field] is None for field in MONITORED_STATE_FIELDS):
+        raise ValueError("No monitored CPU power state is readable")
+    return state
+
+
 @dataclass
 class CpuPowerState:
     scaling_driver: Optional[str]

@@ -17,10 +17,30 @@ from .executor import (
     SyntheticWorkloadExecutor,
     WorkloadReceipt,
 )
+from .rollback import (
+    ROLLBACK_FAILED_STATE_DIFF,
+    ROLLBACK_RESTORED_VERIFIED,
+    ROLLBACK_VERIFIED_UNCHANGED,
+    RollbackContract,
+)
 
 
 class PlanValidationError(ValueError):
     pass
+
+
+def _canonical_artifact(value) -> bytes:
+    """Same canonical form _CampaignEvidence.write_json uses, so digests are stable."""
+    return (
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("ascii")
 
 
 @dataclass(frozen=True)
@@ -298,10 +318,12 @@ class SyntheticExperimentRunner:
         executor=None,
         evidence_base: Optional[Path] = None,
         repository_root: Optional[Path] = None,
+        rollback_contract: Optional[RollbackContract] = None,
     ):
         self.executor = executor or SyntheticWorkloadExecutor()
         self.evidence_base = evidence_base
         self.repository_root = repository_root or Path(__file__).resolve().parent.parent
+        self.rollback_contract = rollback_contract or RollbackContract()
 
     @staticmethod
     def _utc_now() -> str:
@@ -401,6 +423,81 @@ class SyntheticExperimentRunner:
         ):
             raise ValueError("Receipt failed the fixed campaign contract")
 
+    def _finalize_rollback(self, prestate, campaign_id, plan_digest):
+        """Closes the execution-coupled loop: re-observe, restore if it moved, verify.
+
+        Runs on every path that reached the sample loop, including aborts, because
+        an abandoned campaign is exactly when unrestored state matters most.
+        """
+        contract = self.rollback_contract
+        observation_error = None
+        close_state = None
+        try:
+            unchanged = contract.verify_restoration(prestate)
+            close_state = contract.observed_state
+        except (OSError, ValueError) as exc:
+            unchanged = False
+            observation_error = str(exc)
+        differences = []
+        if not unchanged and close_state is not None:
+            differences = [
+                {
+                    "field": field,
+                    "prestate": prestate.get(field),
+                    "poststate": close_state.get(field),
+                }
+                for field in sorted(set(prestate) | set(close_state))
+                if prestate.get(field) != close_state.get(field)
+            ]
+        verified_state = close_state
+        restored_verified = False
+        if not unchanged:
+            if contract.execute_rollback(prestate):
+                try:
+                    restored_verified = contract.verify_restoration(prestate)
+                    verified_state = contract.observed_state
+                except (OSError, ValueError) as exc:
+                    observation_error = str(exc)
+        receipt = contract.restoration_receipt
+        if unchanged:
+            status = ROLLBACK_VERIFIED_UNCHANGED
+            reason = "Monitored host state at close equals the captured prestate"
+        elif restored_verified:
+            status = ROLLBACK_RESTORED_VERIFIED
+            reason = "Declared restoration returned the monitored state to the prestate"
+        elif observation_error is not None and close_state is None:
+            status = ROLLBACK_FAILED_STATE_DIFF
+            reason = f"Host state could not be observed at close: {observation_error}"
+        elif receipt is None:
+            status = ROLLBACK_FAILED_STATE_DIFF
+            reason = (
+                "Monitored host state changed during the campaign and the campaign "
+                "declared no restoration command"
+            )
+        elif not receipt.success:
+            status = ROLLBACK_FAILED_STATE_DIFF
+            reason = f"Restoration did not verify: {receipt.error_message or receipt.verified_state}"
+        else:
+            status = ROLLBACK_FAILED_STATE_DIFF
+            reason = (
+                "Restoration reported the declared profile but the monitored state "
+                "still differs from the prestate"
+            )
+        return {
+            "campaign_id": campaign_id,
+            "plan_sha256": plan_digest,
+            "recorded_at": self._utc_now(),
+            "status": status,
+            "reason": reason,
+            "differences": differences,
+            "restoration_executed": receipt is not None,
+            "restoration_command": contract.restoration_command,
+            "restoration_receipt": None if receipt is None else asdict(receipt),
+            "observation_error": observation_error,
+            "close_state": close_state,
+            "verified_state": verified_state,
+        }, close_state
+
     def run(
         self,
         plan: SyntheticExperimentPlan,
@@ -433,6 +530,9 @@ class SyntheticExperimentRunner:
                 raise AuthorizationDenied(
                     "Proposal bytes are non-canonical or do not contain the authorized plan"
                 )
+            # The prestate is taken before the one-use authorization is burned: a
+            # host whose state cannot be observed has not earned a spent ceremony.
+            prestate = self.rollback_contract.capture_prestate()
             authorization.consume(plan_digest, proposal.sha256)
             runner_digest = self._verify_runner(plan)
         except ValueError as exc:
@@ -519,6 +619,17 @@ class SyntheticExperimentRunner:
                 )
             campaign_record["runner"].update(sandbox_binaries)
             store.write_json("campaign.json", campaign_record)
+
+            prestate_bytes = _canonical_artifact(
+                {
+                    "campaign_id": campaign_id,
+                    "plan_sha256": plan_digest,
+                    "recorded_at": self._utc_now(),
+                    "state": prestate,
+                }
+            )
+            store.write_bytes("prestate.json", prestate_bytes)
+            prestate_digest = hashlib.sha256(prestate_bytes).hexdigest()
 
             current_sample = None
             for sample_number in range(1, plan.samples + 1):
@@ -678,12 +789,32 @@ class SyntheticExperimentRunner:
                     verdict = "DEMONSTRATED"
                     reason = "Five deterministic samples satisfied the fixed repeatability contract"
 
+            rollback, close_state = self._finalize_rollback(prestate, campaign_id, plan_digest)
+            poststate_bytes = _canonical_artifact(
+                {
+                    "campaign_id": campaign_id,
+                    "plan_sha256": plan_digest,
+                    "recorded_at": self._utc_now(),
+                    "state": close_state,
+                    "observation_error": rollback["observation_error"],
+                }
+            )
+            store.write_bytes("poststate.json", poststate_bytes)
+            rollback["prestate_sha256"] = prestate_digest
+            rollback["poststate_sha256"] = hashlib.sha256(poststate_bytes).hexdigest()
+            store.write_bytes("rollback.json", _canonical_artifact(rollback))
+            if rollback["status"] == ROLLBACK_FAILED_STATE_DIFF and status == "COMPLETED":
+                status = "ABORTED"
+                verdict = "REFUTED"
+                reason = "Host state changed and was not restored: " + rollback["reason"]
+
             ended_at = self._utc_now()
             campaign_record.update(
                 {
                     "status": status,
                     "verdict": verdict,
                     "reason": reason,
+                    "rollback_status": rollback["status"],
                     "ended_at": ended_at,
                     "duration_seconds": time.monotonic() - started_monotonic,
                     "samples_completed": len(completed),

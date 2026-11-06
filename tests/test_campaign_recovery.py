@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core.cli import cmd_inspect_synthetic_campaign
+from core.cpu_power import MONITORED_STATE_FIELDS
 from core.experiment import (
     _CampaignEvidence,
     SyntheticExperimentPlan,
@@ -57,6 +58,19 @@ class TestCampaignRecoveryInspection(unittest.TestCase):
             value, sort_keys=True, separators=(",", ":"), allow_nan=False
         ).encode("ascii") + b"\n"
 
+    @staticmethod
+    def _host_state():
+        readings = {
+            "scaling_driver": "amd-pstate-epp",
+            "governor": "performance",
+            "energy_performance_preference": "performance",
+            "boost_enabled": True,
+            "boost_control": "/sys/devices/system/cpu/cpufreq/boost",
+            "platform_profile": "performance",
+        }
+        assert set(readings) == set(MONITORED_STATE_FIELDS)
+        return {field: readings[field] for field in MONITORED_STATE_FIELDS}
+
     def _write_campaign(self, status="COMPLETED", modern=True, samples=5):
         self.evidence_base.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.evidence_base, 0o700)
@@ -67,39 +81,79 @@ class TestCampaignRecoveryInspection(unittest.TestCase):
         self.campaign_dir.mkdir(parents=True, mode=0o700)
         plan_bytes = self.plan.canonical_bytes()
         proposal_bytes = self.proposal.canonical_bytes()
-        files = {
-            "plan.json": plan_bytes,
-            "campaign.json": self._json_bytes(
+        host_state = self._host_state()
+        prestate_bytes = self._json_bytes(
+            {
+                "campaign_id": self.campaign_id,
+                "plan_sha256": self.plan.sha256,
+                "recorded_at": "2026-11-03T00:00:00+00:00",
+                "state": host_state,
+            }
+        )
+        poststate_bytes = self._json_bytes(
+            {
+                "campaign_id": self.campaign_id,
+                "plan_sha256": self.plan.sha256,
+                "recorded_at": "2026-11-03T00:00:05+00:00",
+                "state": host_state,
+                "observation_error": None,
+            }
+        )
+        rollback_bytes = self._json_bytes(
+            {
+                "campaign_id": self.campaign_id,
+                "plan_sha256": self.plan.sha256,
+                "recorded_at": "2026-11-03T00:00:05+00:00",
+                "status": "VERIFIED_UNCHANGED",
+                "reason": "Monitored host state at close equals the captured prestate",
+                "differences": [],
+                "restoration_executed": False,
+                "restoration_command": None,
+                "restoration_receipt": None,
+                "observation_error": None,
+                "close_state": host_state,
+                "verified_state": host_state,
+                "prestate_sha256": hashlib.sha256(prestate_bytes).hexdigest(),
+                "poststate_sha256": hashlib.sha256(poststate_bytes).hexdigest(),
+            }
+        )
+        campaign_record = {
+            "campaign_id": self.campaign_id,
+            "plan_sha256": self.plan.sha256,
+            "authorization": (
                 {
-                    "campaign_id": self.campaign_id,
+                    "method": "local_tty_confirmation",
                     "plan_sha256": self.plan.sha256,
-                    "authorization": (
-                        {
-                            "method": "local_tty_confirmation",
-                            "plan_sha256": self.plan.sha256,
-                            "proposal_sha256": self.proposal.sha256,
-                        }
-                        if modern
-                        else {
-                            "method": "explicit_operator_plan_digest",
-                            "authorized_plan_sha256": self.plan.sha256,
-                        }
-                    ),
-                    "status": status,
-                    "verdict": "DEMONSTRATED" if status == "COMPLETED" else "NOT_DEMONSTRATED",
-                    "samples_completed": samples if status == "COMPLETED" else 0,
-                    "samples_expected": self.plan.samples,
-                    "performance_claim": False,
-                    "runner": {
-                        "workload_id": self.plan.workload_id,
-                        "workload_version": self.plan.workload_version,
-                        "runner_sha256": self.plan.runner_digest,
-                    },
+                    "proposal_sha256": self.proposal.sha256,
+                }
+                if modern
+                else {
+                    "method": "explicit_operator_plan_digest",
+                    "authorized_plan_sha256": self.plan.sha256,
                 }
             ),
+            "status": status,
+            "verdict": "DEMONSTRATED" if status == "COMPLETED" else "NOT_DEMONSTRATED",
+            "samples_completed": samples if status == "COMPLETED" else 0,
+            "samples_expected": self.plan.samples,
+            "performance_claim": False,
+            "runner": {
+                "workload_id": self.plan.workload_id,
+                "workload_version": self.plan.workload_version,
+                "runner_sha256": self.plan.runner_digest,
+            },
+        }
+        if modern:
+            campaign_record["rollback_status"] = "VERIFIED_UNCHANGED"
+        files = {
+            "plan.json": plan_bytes,
+            "campaign.json": self._json_bytes(campaign_record),
         }
         if modern:
             files["proposal.json"] = proposal_bytes
+            files["prestate.json"] = prestate_bytes
+            files["poststate.json"] = poststate_bytes
+            files["rollback.json"] = rollback_bytes
             files["checkpoint.json"] = self._json_bytes(
                 {
                     "schema_version": 1,

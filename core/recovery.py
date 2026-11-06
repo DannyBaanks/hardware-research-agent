@@ -8,8 +8,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .cpu_power import MONITORED_STATE_FIELDS
 from .experiment import SyntheticExperimentPlan
 from .planning import ProposalValidationError, SyntheticExperimentProposal
+from .rollback import (
+    ROLLBACK_FAILED_STATE_DIFF,
+    ROLLBACK_RESTORED_VERIFIED,
+    ROLLBACK_STATUSES,
+    ROLLBACK_VERIFIED_UNCHANGED,
+    RollbackController,
+)
 
 
 _CAMPAIGN_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -20,6 +28,38 @@ _SAMPLE_FILE = re.compile(
 _MAX_FILE_BYTES = 1024 * 1024
 _MAX_DIRECTORY_ENTRIES = 64
 _BASE_FILES = {"campaign.json", "plan.json", "proposal.json", "checkpoint.json"}
+# A campaign that executed also has to evidence that the host is where it said it
+# would be; these three are as load-bearing as the receipts.
+_ROLLBACK_FILES = {"prestate.json", "poststate.json", "rollback.json"}
+_ROLLBACK_FIELDS = set(MONITORED_STATE_FIELDS)
+_PRESTATE_FIELDS = {"campaign_id", "plan_sha256", "recorded_at", "state"}
+_POSTSTATE_FIELDS = _PRESTATE_FIELDS | {"observation_error"}
+_ROLLBACK_RECORD_FIELDS = {
+    "campaign_id",
+    "plan_sha256",
+    "recorded_at",
+    "status",
+    "reason",
+    "differences",
+    "restoration_executed",
+    "restoration_command",
+    "restoration_receipt",
+    "observation_error",
+    "close_state",
+    "verified_state",
+    "prestate_sha256",
+    "poststate_sha256",
+}
+
+
+def _is_campaign_entry(name: str) -> bool:
+    return (
+        name == "SHA256SUMS.txt"
+        or name in _BASE_FILES
+        or name in _ROLLBACK_FILES
+        or _SAMPLE_FILE.fullmatch(name) is not None
+        or name.startswith(".tmp-")
+    )
 
 
 @dataclass(frozen=True)
@@ -142,7 +182,7 @@ def _parse_manifest(data: bytes) -> Dict[str, str]:
             raise _InspectionError("Manifest must not include its own digest")
         if name in entries:
             raise _InspectionError(f"Duplicate manifest entry: {name}")
-        if name not in _BASE_FILES and _SAMPLE_FILE.fullmatch(name) is None:
+        if not _is_campaign_entry(name):
             raise _InspectionError(f"Unexpected manifest entry: {name}")
         entries[name] = digest
     if not entries:
@@ -215,6 +255,158 @@ def _validate_receipt(
     return None
 
 
+def _observed_state_issue(name: str, value) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != _ROLLBACK_FIELDS:
+        return f"{name} must list exactly the monitored CPU power fields"
+    for field, reading in value.items():
+        if reading is None or type(reading) is bool or (type(reading) is str and reading):
+            continue
+        return f"{name} field {field} is not a readable scalar or absent"
+    return None
+
+
+def _state_differences(prestate_state, poststate_state):
+    if not isinstance(prestate_state, dict) or not isinstance(poststate_state, dict):
+        return []
+    return [
+        {
+            "field": field,
+            "prestate": prestate_state.get(field),
+            "poststate": poststate_state.get(field),
+        }
+        for field in sorted(prestate_state)
+        if prestate_state.get(field) != poststate_state.get(field)
+    ]
+
+
+def _is_supported_restoration(command) -> bool:
+    if not isinstance(command, str):
+        return False
+    try:
+        argv = RollbackController._parse_command(command)
+    except ValueError:
+        return False
+    return (
+        len(argv) == 3
+        and argv[0] == "powerprofilesctl"
+        and argv[1] == "set"
+        and argv[2] in RollbackController.PROFILES
+    )
+
+
+def _derived_rollback_status(record, prestate_state, poststate_state) -> str:
+    """Recomputes the status from the sealed states, never trusting the label."""
+    if poststate_state == prestate_state:
+        return ROLLBACK_VERIFIED_UNCHANGED
+    receipt = record.get("restoration_receipt")
+    if (
+        record.get("restoration_executed") is True
+        and isinstance(receipt, dict)
+        and receipt.get("success") is True
+        and record.get("verified_state") == prestate_state
+    ):
+        return ROLLBACK_RESTORED_VERIFIED
+    return ROLLBACK_FAILED_STATE_DIFF
+
+
+def _validate_rollback_evidence(
+    directory_fd: int, present: set, campaign: Dict[str, object], campaign_id: str, plan_digest: str
+) -> List[str]:
+    """Checks the prestate/poststate/rollback triple against itself.
+
+    The three files are evidence only because they can contradict one another: a
+    status label that does not follow from the two states sealed into the rollback
+    digest is not a claim the campaign is allowed to make about the host.
+    """
+    missing = sorted(_ROLLBACK_FILES - present)
+    if missing:
+        return [f"Execution-coupled rollback evidence is missing: {', '.join(missing)}"]
+    raw = {
+        name: _read_regular_file(directory_fd, name)
+        for name in ("prestate.json", "poststate.json", "rollback.json")
+    }
+    prestate = _parse_json(raw["prestate.json"], "prestate.json")
+    poststate = _parse_json(raw["poststate.json"], "poststate.json")
+    record = _parse_json(raw["rollback.json"], "rollback.json")
+    issues: List[str] = []
+    if set(prestate) != _PRESTATE_FIELDS:
+        issues.append("Prestate record has missing or unknown fields")
+    if set(poststate) != _POSTSTATE_FIELDS:
+        issues.append("Poststate record has missing or unknown fields")
+    if set(record) != _ROLLBACK_RECORD_FIELDS:
+        issues.append("Rollback record has missing or unknown fields")
+    if issues:
+        return issues
+
+    for name, artifact in (
+        ("prestate.json", prestate),
+        ("poststate.json", poststate),
+        ("rollback.json", record),
+    ):
+        if artifact.get("campaign_id") != campaign_id:
+            issues.append(f"{name} does not belong to this campaign")
+        if artifact.get("plan_sha256") != plan_digest:
+            issues.append(f"{name} does not bind the recorded plan")
+        if not isinstance(artifact.get("recorded_at"), str) or not artifact["recorded_at"]:
+            issues.append(f"{name} has no recording timestamp")
+
+    for name, value in (
+        ("prestate", prestate.get("state")),
+        ("poststate", poststate.get("state")),
+        ("rollback close_state", record.get("close_state")),
+        ("rollback verified_state", record.get("verified_state")),
+    ):
+        problem = _observed_state_issue(name, value)
+        if problem:
+            issues.append(problem)
+    if record.get("status") not in ROLLBACK_STATUSES:
+        issues.append("Rollback status is outside the derived vocabulary")
+    if not isinstance(record.get("reason"), str) or not record["reason"]:
+        issues.append("Rollback record has no reason")
+    if record.get("observation_error") is not None and not isinstance(
+        record.get("observation_error"), str
+    ):
+        issues.append("Rollback observation error is neither absent nor a string")
+    if poststate.get("state") is None and poststate.get("observation_error") is None:
+        issues.append("Poststate records neither an observation nor an observation error")
+    executed = record.get("restoration_executed")
+    receipt = record.get("restoration_receipt")
+    if type(executed) is not bool:
+        issues.append("Rollback restoration flag is not a boolean")
+    elif executed is (receipt is None):
+        issues.append("Rollback execution flag disagrees with the restoration receipt")
+    if receipt is not None and not isinstance(receipt, dict):
+        issues.append("Rollback restoration receipt is not an object")
+    if record.get("close_state") != poststate.get("state"):
+        issues.append("Rollback close state is not the recorded poststate")
+    if record.get("differences") != _state_differences(prestate["state"], poststate["state"]):
+        issues.append("Rollback differences are not the recorded state difference")
+    if record.get("prestate_sha256") != hashlib.sha256(raw["prestate.json"]).hexdigest():
+        issues.append("Rollback record does not bind the recorded prestate bytes")
+    if record.get("poststate_sha256") != hashlib.sha256(raw["poststate.json"]).hexdigest():
+        issues.append("Rollback record does not bind the recorded poststate bytes")
+    if record["status"] == ROLLBACK_VERIFIED_UNCHANGED and record["restoration_executed"] is not False:
+        issues.append("Unchanged rollback reports an executed restoration")
+    if executed is True:
+        if not _is_supported_restoration(record.get("restoration_command")):
+            issues.append("Recorded restoration command is outside the supported profile surface")
+        if isinstance(receipt, dict) and receipt.get("target_command") != record.get(
+            "restoration_command"
+        ):
+            issues.append("Restoration receipt does not name the recorded restoration command")
+    derived = _derived_rollback_status(record, prestate["state"], poststate["state"])
+    if record["status"] != derived:
+        issues.append(f"Rollback status says {record['status']} but the states say {derived}")
+    declared = campaign.get("rollback_status")
+    if declared != record["status"]:
+        issues.append(f"Campaign record declares rollback status {declared}")
+    if campaign.get("status") == "COMPLETED" and derived == ROLLBACK_FAILED_STATE_DIFF:
+        issues.append("Completed campaign carries unrestored host state")
+    return issues
+
+
 def inspect_synthetic_campaign(
     campaign_id: str, evidence_base: Optional[Path] = None
 ) -> CampaignInspection:
@@ -261,7 +453,7 @@ def inspect_synthetic_campaign(
         if len(names) > _MAX_DIRECTORY_ENTRIES:
             raise _InspectionError("Campaign directory exceeds the entry limit")
         for name in names:
-            if name != "SHA256SUMS.txt" and name not in _BASE_FILES and _SAMPLE_FILE.fullmatch(name) is None and not name.startswith(".tmp-"):
+            if not _is_campaign_entry(name):
                 raise _InspectionError(f"Unexpected campaign entry: {name}")
 
         manifest_data = _read_regular_file(campaign_fd, "SHA256SUMS.txt")
@@ -393,6 +585,12 @@ def inspect_synthetic_campaign(
             or authorization.get("proposal_sha256") != proposal_digest
         ):
             issues.append("Campaign authorization does not bind the recorded proposal and plan")
+
+        issues.extend(
+            _validate_rollback_evidence(
+                campaign_fd, present, campaign, campaign_id, plan_digest
+            )
+        )
 
         samples_verified = 0
         for sample in range(1, plan_data["samples"] + 1):
