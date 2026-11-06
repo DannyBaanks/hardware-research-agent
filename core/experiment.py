@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from .authorization import AuthorizationDenied, PlanAuthorization
+from .authorization import AuthorizationDenied, AuthorizationExpired, PlanAuthorization
 from .executor import (
     SandboxUnavailableError,
     SyntheticWorkloadExecutor,
@@ -417,6 +417,12 @@ class SyntheticExperimentRunner:
             plan_digest = hashlib.sha256(canonical_plan).hexdigest()
             if type(authorization) is not PlanAuthorization:
                 raise AuthorizationDenied("A one-time local TTY authorization is required")
+            if authorization.expired():
+                raise AuthorizationExpired("TTY authorization has expired")
+            if authorization.ttl_seconds < plan.max_total_duration:
+                raise AuthorizationDenied(
+                    "Authorization lifetime is shorter than the authorized campaign"
+                )
             if not isinstance(proposal_bytes, bytes):
                 raise AuthorizationDenied("Canonical proposal bytes are required")
             proposal = SyntheticExperimentProposal.from_bytes(proposal_bytes)
@@ -427,7 +433,7 @@ class SyntheticExperimentRunner:
                 raise AuthorizationDenied(
                     "Proposal bytes are non-canonical or do not contain the authorized plan"
                 )
-            proposal_digest = authorization.consume(plan_digest, proposal.sha256)
+            authorization.consume(plan_digest, proposal.sha256)
             runner_digest = self._verify_runner(plan)
         except ValueError as exc:
             verdict = "DENY"
@@ -464,11 +470,7 @@ class SyntheticExperimentRunner:
             campaign_record = {
                 "campaign_id": campaign_id,
                 "plan_sha256": plan_digest,
-                "authorization": {
-                    "method": "local_tty_confirmation",
-                    "plan_sha256": plan_digest,
-                    "proposal_sha256": proposal_digest,
-                },
+                "authorization": authorization.to_evidence_record(),
                 "status": "RUNNING",
                 "verdict": "NOT_DEMONSTRATED",
                 "started_at": started_at,
@@ -522,6 +524,9 @@ class SyntheticExperimentRunner:
             for sample_number in range(1, plan.samples + 1):
                 if not self._plan_is_unchanged(plan, canonical_plan, plan_digest):
                     reason = "Plan changed after authorization"
+                    break
+                if authorization.expired():
+                    reason = f"Authorization expired before sample {sample_number}"
                     break
                 if time.monotonic() - started_monotonic >= plan.max_total_duration:
                     reason = "Campaign exceeded maximum total duration"

@@ -8,7 +8,13 @@ from core.authorization import authorize_plan_from_tty
 
 
 def authorize_in_pty(
-    plan_sha256, proposal_sha256, proposal_summary="{}", answer=None, capture=False
+    plan_sha256,
+    proposal_sha256,
+    proposal_summary="{}",
+    answer=None,
+    capture=False,
+    ttl_seconds=None,
+    clock=None,
 ):
     master_fd, slave_fd = pty.openpty()
     expected = f"AUTHORIZE {plan_sha256}"
@@ -36,10 +42,15 @@ def authorize_in_pty(
     os.set_blocking(master_fd, False)
     responder = threading.Thread(target=respond_to_prompt)
     responder.start()
+    issued = {}
+    if ttl_seconds is not None:
+        issued["ttl_seconds"] = ttl_seconds
+    if clock is not None:
+        issued["clock"] = clock
     try:
         with patch("core.authorization.os.open", return_value=os.dup(slave_fd)):
             result = authorize_plan_from_tty(
-                plan_sha256, proposal_sha256, proposal_summary
+                plan_sha256, proposal_sha256, proposal_summary, **issued
             )
     finally:
         response_sent.wait(5)

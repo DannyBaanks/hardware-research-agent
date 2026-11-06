@@ -2,9 +2,15 @@ import hmac
 import os
 import re
 import threading
+import time
+from datetime import datetime, timedelta, timezone
 
 
 class AuthorizationDenied(Exception):
+    pass
+
+
+class AuthorizationExpired(AuthorizationDenied):
     pass
 
 
@@ -12,9 +18,33 @@ _ISSUER = object()
 _CONFIRMATION_PREFIX = b"AUTHORIZE "
 _MAX_RESPONSE_BYTES = 160
 
+# Contract: docs/SAFETY_CONTRACTS.md 6.1. A caller-supplied ttl may only shorten
+# this ceiling, never raise it, or an authorized agent could hand itself more time.
+DEFAULT_TTL_SECONDS = 120
+
+
+def _validate_ttl(ttl_seconds):
+    if (
+        isinstance(ttl_seconds, bool)
+        or not isinstance(ttl_seconds, (int, float))
+        or not 0 < ttl_seconds <= DEFAULT_TTL_SECONDS
+    ):
+        raise AuthorizationDenied("Authorization lifetime must be within the fixed ceiling")
+    return float(ttl_seconds)
+
 
 class PlanAuthorization:
-    __slots__ = ("_plan_sha256", "_proposal_sha256", "_used", "_lock")
+    __slots__ = (
+        "_plan_sha256",
+        "_proposal_sha256",
+        "_used",
+        "_lock",
+        "_ttl_seconds",
+        "_issued_monotonic",
+        "_issued_at",
+        "_expires_at",
+        "_clock",
+    )
 
     def __init__(
         self,
@@ -22,6 +52,8 @@ class PlanAuthorization:
         proposal_sha256: str,
         *,
         _issuer=None,
+        ttl_seconds: float = DEFAULT_TTL_SECONDS,
+        clock=time.monotonic,
     ):
         if _issuer is not _ISSUER:
             raise AuthorizationDenied("Authorization must be granted by the local TTY")
@@ -29,8 +61,55 @@ class PlanAuthorization:
         self._proposal_sha256 = proposal_sha256
         self._used = False
         self._lock = threading.Lock()
+        self._ttl_seconds = _validate_ttl(ttl_seconds)
+        if not callable(clock):
+            raise AuthorizationDenied("Authorization clock must be callable")
+        self._clock = clock
+        self._issued_monotonic = self._clock()
+        # Reporting fields only; the validity decision never reads wall-clock time.
+        issued_wall = datetime.now(timezone.utc)
+        self._issued_at = issued_wall.isoformat(timespec="seconds")
+        self._expires_at = (
+            issued_wall + timedelta(seconds=self._ttl_seconds)
+        ).isoformat(timespec="seconds")
+
+    @property
+    def ttl_seconds(self) -> float:
+        return self._ttl_seconds
+
+    @property
+    def issued_at(self) -> str:
+        return self._issued_at
+
+    @property
+    def expires_at(self) -> str:
+        return self._expires_at
+
+    def remaining_seconds(self) -> float:
+        # A clock reading earlier than issuance is treated as spent, so an injected
+        # clock can only shorten an authorization's life, never extend it.
+        elapsed = self._clock() - self._issued_monotonic
+        if elapsed < 0:
+            return 0.0
+        return self._ttl_seconds - elapsed
+
+    def expired(self) -> bool:
+        return self.remaining_seconds() <= 0
+
+    def to_evidence_record(self) -> dict:
+        return {
+            "method": "local_tty_confirmation",
+            "plan_sha256": self._plan_sha256,
+            "proposal_sha256": self._proposal_sha256,
+            "ttl_seconds": self._ttl_seconds,
+            "issued_at": self._issued_at,
+            "expires_at": self._expires_at,
+        }
 
     def consume(self, plan_sha256: str, proposal_sha256: str) -> str:
+        # Checked before the used flag so an expired grant cannot burn the ceremony.
+        if self.expired():
+            raise AuthorizationExpired("TTY authorization has expired")
         with self._lock:
             if self._used:
                 raise AuthorizationDenied("TTY authorization has already been used")
@@ -40,6 +119,7 @@ class PlanAuthorization:
         if not hmac.compare_digest(self._proposal_sha256, proposal_sha256):
             raise AuthorizationDenied("Authorized proposal digest does not match")
         return self._proposal_sha256
+
 
 
 def _read_confirmation(tty_fd: int, plan_sha256: str) -> bool:
@@ -77,7 +157,10 @@ def authorize_plan_from_tty(
     plan_sha256: str,
     proposal_sha256: str,
     proposal_summary: str,
+    ttl_seconds: float = DEFAULT_TTL_SECONDS,
+    clock=time.monotonic,
 ) -> PlanAuthorization:
+    ttl_seconds = _validate_ttl(ttl_seconds)
     if not isinstance(plan_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", plan_sha256):
         raise AuthorizationDenied("Invalid canonical plan digest")
     if not isinstance(proposal_sha256, str) or not re.fullmatch(
@@ -107,4 +190,10 @@ def authorize_plan_from_tty(
             raise AuthorizationDenied("TTY confirmation was absent or did not match")
     finally:
         os.close(tty_fd)
-    return PlanAuthorization(plan_sha256, proposal_sha256, _issuer=_ISSUER)
+    return PlanAuthorization(
+        plan_sha256,
+        proposal_sha256,
+        _issuer=_ISSUER,
+        ttl_seconds=ttl_seconds,
+        clock=clock,
+    )
