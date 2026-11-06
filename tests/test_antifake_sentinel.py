@@ -47,8 +47,20 @@ class TestAntiFakeSentinel(unittest.TestCase):
     def test_caller_boolean_cannot_authorize_state_change(self):
         plan = {
             "experiment_id": "EXP_PROFILE",
+            "target_hardware": {"pci_id": "1022:1507", "device_family": "Zen 4"},
+            "hypothesis_id": "H-profile-1",
             "risk_tier": 1,
-            "workload": {"command": "powerprofilesctl set performance"},
+            "primary_variable": "median tokens per second",
+            "workload": {
+                "command": "powerprofilesctl set performance",
+                "repetitions": 5,
+                "timeout_sec": 8,
+            },
+            "controls": {
+                "negative_control": "same workload with the profile restored",
+                "sequence_pattern": "counterbalanced_alternating",
+                "output_hash_check": True,
+            },
             "rollback_plan": {
                 "restoration_command": "powerprofilesctl set power-saver",
                 "verification_query": "powerprofilesctl get",

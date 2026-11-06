@@ -5,9 +5,11 @@ import re
 import secrets
 import shlex
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
+
+from .rollback import RollbackController
 
 
 class SentinelVerdict(Enum):
@@ -48,6 +50,145 @@ class AuthorizationGrant:
     issued_at: Optional[float] = None
     expires_at: Optional[float] = None
     grant_token: Optional[str] = None
+
+
+# Mirrors schemas/experiment.schema.json. A test asserts the two stay equal, so the
+# schema stays declarative documentation rather than a runtime dependency.
+EXPERIMENT_PLAN_REQUIRED = (
+    "experiment_id",
+    "target_hardware",
+    "hypothesis_id",
+    "risk_tier",
+    "primary_variable",
+    "workload",
+    "controls",
+    "rollback_plan",
+)
+EXPERIMENT_PLAN_OPTIONAL = ("predicted_delta",)
+TARGET_HARDWARE_FIELDS = ("pci_id", "device_family")
+TARGET_HARDWARE_OPTIONAL = ("subsystem_id",)
+WORKLOAD_FIELDS = ("command", "repetitions", "timeout_sec")
+CONTROLS_FIELDS = ("negative_control", "sequence_pattern", "output_hash_check")
+ROLLBACK_PLAN_FIELDS = (
+    "restoration_command",
+    "verification_query",
+    "expected_restored_state",
+)
+SEQUENCE_PATTERNS = ("counterbalanced_alternating", "single_group")
+WORKLOAD_MIN_REPETITIONS = 3
+WORKLOAD_MIN_TIMEOUT_SECONDS = 1
+EXPERIMENT_ID_PATTERN = re.compile(r"^[A-Z0-9_-]+$")
+
+
+def _non_empty_text(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _exact_keys(value, fields: Tuple[str, ...], label: str, optional=()) -> List[str]:
+    if not isinstance(value, dict):
+        return [f"{label} must be an object"]
+    issues = []
+    missing = sorted(set(fields) - set(value))
+    unknown = sorted(set(value) - set(fields) - set(optional))
+    if missing:
+        issues.append(f"{label} is missing {', '.join(missing)}")
+    if unknown:
+        issues.append(f"{label} has unknown fields {', '.join(unknown)}")
+    return issues
+
+
+def rollback_plan_issues(rollback_plan) -> List[str]:
+    """Reports why a rollback plan cannot be verified, without executing anything."""
+    issues = _exact_keys(rollback_plan, ROLLBACK_PLAN_FIELDS, "rollback_plan")
+    if issues:
+        return issues
+    for field in ROLLBACK_PLAN_FIELDS:
+        if not _non_empty_text(rollback_plan[field]):
+            issues.append(f"rollback_plan.{field} must be a non-empty string")
+    if issues:
+        return issues
+    try:
+        RollbackController._validate_restore(
+            rollback_plan["restoration_command"],
+            rollback_plan["expected_restored_state"],
+        )
+    except ValueError as exc:
+        issues.append(f"rollback_plan.restoration_command is not verifiable: {exc}")
+    try:
+        RollbackController._validate_query(rollback_plan["verification_query"])
+    except ValueError as exc:
+        issues.append(f"rollback_plan.verification_query is not verifiable: {exc}")
+    return issues
+
+
+def experiment_plan_issues(plan) -> List[str]:
+    """Validates a complete experiment plan against the schema's rules."""
+    if not isinstance(plan, dict):
+        return ["plan must be an object"]
+    issues = []
+    missing = sorted(set(EXPERIMENT_PLAN_REQUIRED) - set(plan))
+    unknown = sorted(set(plan) - set(EXPERIMENT_PLAN_REQUIRED) - set(EXPERIMENT_PLAN_OPTIONAL))
+    if missing:
+        issues.append(f"plan is missing {', '.join(missing)}")
+    if unknown:
+        issues.append(f"plan has unknown fields {', '.join(unknown)}")
+
+    experiment_id = plan.get("experiment_id")
+    if not isinstance(experiment_id, str) or not EXPERIMENT_ID_PATTERN.fullmatch(experiment_id):
+        issues.append("experiment_id must match ^[A-Z0-9_-]+$")
+    risk_tier = plan.get("risk_tier")
+    if isinstance(risk_tier, bool) or not isinstance(risk_tier, int) or risk_tier not in range(4):
+        issues.append("risk_tier must be an integer from 0 to 3")
+    for field in ("hypothesis_id", "primary_variable"):
+        if not _non_empty_text(plan.get(field)):
+            issues.append(f"{field} must be a non-empty string")
+    predicted = plan.get("predicted_delta")
+    if predicted is not None and not _non_empty_text(predicted):
+        issues.append("predicted_delta must be a non-empty string")
+
+    target = plan.get("target_hardware")
+    issues += _exact_keys(
+        target, TARGET_HARDWARE_FIELDS, "target_hardware", TARGET_HARDWARE_OPTIONAL
+    )
+    if isinstance(target, dict):
+        for field in TARGET_HARDWARE_FIELDS + TARGET_HARDWARE_OPTIONAL:
+            if field in target and not _non_empty_text(target[field]):
+                issues.append(f"target_hardware.{field} must be a non-empty string")
+
+    workload = plan.get("workload")
+    issues += _exact_keys(workload, WORKLOAD_FIELDS, "workload")
+    if isinstance(workload, dict):
+        command = workload.get("command")
+        if not _non_empty_text(command) or "\x00" in str(command):
+            issues.append("workload.command must be a non-empty string without NUL bytes")
+        repetitions = workload.get("repetitions")
+        if (
+            isinstance(repetitions, bool)
+            or not isinstance(repetitions, int)
+            or repetitions < WORKLOAD_MIN_REPETITIONS
+        ):
+            issues.append(f"workload.repetitions must be at least {WORKLOAD_MIN_REPETITIONS}")
+        timeout = workload.get("timeout_sec")
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or timeout < WORKLOAD_MIN_TIMEOUT_SECONDS
+        ):
+            issues.append(f"workload.timeout_sec must be at least {WORKLOAD_MIN_TIMEOUT_SECONDS}")
+
+    controls = plan.get("controls")
+    issues += _exact_keys(controls, CONTROLS_FIELDS, "controls")
+    if isinstance(controls, dict):
+        if not _non_empty_text(controls.get("negative_control")):
+            issues.append("controls.negative_control must be a non-empty string")
+        if controls.get("sequence_pattern") not in SEQUENCE_PATTERNS:
+            issues.append(f"controls.sequence_pattern must be one of {', '.join(SEQUENCE_PATTERNS)}")
+        if not isinstance(controls.get("output_hash_check"), bool):
+            issues.append("controls.output_hash_check must be a boolean")
+
+    if "rollback_plan" in plan:
+        issues += rollback_plan_issues(plan["rollback_plan"])
+    return issues
 
 
 class SentinelGate:
@@ -127,6 +268,19 @@ class SentinelGate:
                 derived_tier,
                 f"Caller-supplied risk_tier does not match the command's derived tier ({derived_tier})",
             )
+
+        if derived_tier == 1:
+            # A state change is only evaluable as a complete experiment plan: the
+            # schema's required fields and a rollback the controller can verify are
+            # both load-bearing before a human is even asked (SAFETY_CONTRACTS.md 2, 4).
+            issues = experiment_plan_issues(plan)
+            if issues:
+                return self._deny(
+                    exp_id,
+                    1,
+                    "State-changing plan must be a complete, verifiable experiment plan: "
+                    + "; ".join(issues),
+                )
 
         if derived_tier == 0:
             issued_at = time.monotonic()
