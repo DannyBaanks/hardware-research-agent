@@ -32,6 +32,25 @@ The pipeline is designed to:
 
 ## 2. The 10-Stage Protocol
 
+### Implementation status (2026-11-06)
+
+The ten stages below are the **protocol as designed**. This table says what `core/` actually runs
+today, so no stage reads as satisfied just because it is written down. Detailed limits:
+[TECHNICAL](TECHNICAL.md), contracts: [SAFETY_CONTRACTS](SAFETY_CONTRACTS.md).
+
+| Stage | Status in code | What exists, and what does not |
+|---|---|---|
+| 1 DISCOVER | Implemented | `core/discovery.py` and `adapters/`, read-only (`O_RDONLY`). Some detection relies on fixed ID and path lists. |
+| 2 BASELINE | Partial | A campaign captures the monitored host state before it acts (`RollbackContract.capture_prestate`) and keeps its own sample receipts, but there is no performance-baseline service and no clock/watt reference model. |
+| 3 HYPOTHESIZE | Not implemented | No `core/hypothesis.py`. Sentinel only *validates* that a plan declares `hypothesis_id` and `primary_variable`; formulating the hypothesis stays a human-agent conversation. |
+| 4 CONTROL | Partial | A state-changing plan is denied unless it carries a `controls` object, and `AntiFakeVerifier` refuses a claim without an explicit negative-control delta. The one campaign IHRA can run itself has a single fixed plan with no control pair, so its result is repeatability, not causation. |
+| 5 RISK REVIEW | Implemented | `SentinelGate.evaluate_plan()`: tier derived from the command, Tier-3 patterns denied, unverifiable or incomplete rollback denied. Classifies; it is not an OS-enforced executor. |
+| 6 AUTHORIZE | Implemented, narrowly | One-use local TTY confirmation bound to canonical digests, with a monotonic expiry that cannot be lengthened by the caller. The "cryptographic session nonce" is a per-process HMAC token — anti-replay, never identity. Tier 1 executes only with a person present (`core/tier1.py`); Tier 2 has no code path. |
+| 7 EXPERIMENT | Two runners only | The fixed five-sample sandbox campaign and one `powerprofilesctl` profile change. There is no executor for arbitrary experiment plans. |
+| 8 VERIFY | Implemented with limits | Median ratio across ≥3 runs per side, required hashes, negative-control check, D3cold false-positive rule. No formal significance test, no per-GHz normalization, no physical readback of its own. |
+| 9 RESTORE | Implemented, bounded | Restoration runs and is re-read whether the campaign succeeded, failed or was interrupted inside the guarded window, and the status is derived from the observed states: an unverified restoration demotes that campaign to `ABORTED`, and in the Tier-1 path it also seals the emergency fault that blocks every later run. It cannot run for `SIGKILL` or a crash outside the window, and nothing restores the host on the next launch. |
+| 10 EVIDENCE & RETURN | Partial | Private, atomic, manifest-hashed bundles outside the repository, inspectable read-only. The privacy sanitizer described at this stage does not exist, and `docs/ANTIFAKE_TEST_MATRIX.md` records AF-07 as demonstrated for campaigns only. |
+
 ### Stage 1: DISCOVER (Hardware & Environment Inventory)
 * **Objective:** Establish the ground truth of the machine's physical silicon, bus topology, firmware revisions, and kernel drivers.
 * **Input:** System sysfs nodes (`/sys/devices/system/cpu/`, `/sys/bus/pci/devices/`, `/sys/class/hwmon/`, `/sys/firmware/acpi/`).
