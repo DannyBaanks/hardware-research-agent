@@ -70,6 +70,7 @@ From there the agent can explain your hardware, propose a plan, and help you mea
 | Run a fixed, harmless CPU test in a sandbox to check that results repeat | Promise more FPS or a faster PC |
 | Reject "faster" claims that lack proper runs, hashes and a control (`AntiFake`) | Let an agent call a single lucky run a win |
 | Show NVIDIA Ada status and the D3cold power trap (`ada`) | Install or run the experimental GPU unlock for you |
+| Try **one** power-profile change while you type `AUTHORIZE` at this terminal, then prove it went back (`run-tier1`) | Change anything unattended — and if a change can't be proven restored, it refuses every later run until you fix it |
 
 ## What the results mean
 
@@ -89,16 +90,52 @@ From there the agent can explain your hardware, propose a plan, and help you mea
 | `python3 -m core.cli sentinel 'lscpu'` | Is this exact command on the read-only allowlist? (nothing is executed) |
 | `python3 -m core.cli dry-run ada_d3cold_false_positive` | Replays the "GPU that lied" case with sample data |
 | `python3 -m core.cli run-synthetic sha256-chain-v1` | Harmless sandboxed CPU test (needs `bubblewrap`) |
+| `python3 -m core.cli run-synthetic-experiment --proposal <file>` | Five timed samples in the sandbox, after you type `AUTHORIZE <sha256>` in this terminal |
+| `python3 -m core.cli inspect-synthetic-campaign <id>` | Read a finished or interrupted campaign back, digest by digest — reruns nothing |
+| `python3 -m core.cli run-tier1 --set balanced` | Try one power-profile change with a human watching: applies it, measures it, puts it back, proves it |
+| `python3 -m core.cli list-faults` | Is any change still unrestored? Exits non-zero while one remains |
+| `python3 -m core.cli resolve-fault <id>` | Prove the machine is back the way it should be, then close that record. Changes nothing itself |
 | `python3 -m core.cli inspect <file>` | Analyse a binary with [REA](https://github.com/DannyBaanks/rea), if you have it installed |
+
+## When something goes wrong
+
+**A campaign crashed, was killed, or you pressed Ctrl-C.** Don't rerun it and don't trust the last log
+line — read the evidence:
+
+```bash
+python3 -m core.cli inspect-synthetic-campaign <campaign-id>
+```
+
+It re-checks the manifest file by file and answers `COMPLETED_VALID`, `INCOMPLETE`,
+`NOT_DEMONSTRATED` or `ACTIVE_OR_UNKNOWN`. It never resumes anything and never makes an old campaign
+look better than it is. Each of the five samples seals its own receipt before the next one starts, so
+an interruption costs at most the sample that was running and the evidence says exactly where it
+stopped. **Automatic resuming is not implemented** — the checkpoint tells you where it ended, you
+decide what to do next.
+
+**A power-profile change did not go back.** The Tier-1 runner says so plainly, prints the commands that
+put it back, and writes an emergency fault record. While that record is open, IHRA refuses to run any
+further campaign — sandbox included. You fix the machine by hand, then `resolve-fault <id>` proves the
+host matches what the record demands and closes it. That is the design: **IHRA stops, it does not
+repair.** There is no background service that restores anything when the PC boots.
 
 ## Ready-made experiments and recipes
 
 | What | Run it | Changes |
 |---|---|---|
-| **Does turbo help on my PC?** A fair on/off test with watts, clocks, temperature and hashes | [`experiments/cpu-boost`](experiments/cpu-boost/README.md) | Only the turbo switch, always restored |
-| **Smart boost:** turbo on with charger, off on battery | [`recipes/smart-boost`](recipes/smart-boost/README.md) | Adds 3 files; `uninstall.sh` removes them |
+| **Does turbo help on my PC?** A fair on/off test with watts, clocks, temperature and hashes | [`experiments/cpu-boost`](experiments/cpu-boost/README.md) | The turbo switch. It puts the switch back at the end and on Ctrl-C — **outside** IHRA's safety gate, see below |
+| **Smart boost:** turbo on with charger, off on battery | [`recipes/smart-boost`](recipes/smart-boost/README.md) | Adds 3 files, one of which keeps setting the switch at every boot; `uninstall.sh` removes them |
 
 These need `sudo` because they touch a system setting. Your agent should explain them to you; **you** run them.
+
+> [!WARNING]
+> These two are **scripts you run, not IHRA capabilities**. `run_boost_matrix.py` writes
+> `/sys/devices/system/cpu/cpufreq/boost` under `sudo`, and `smart-boost` installs a udev rule plus a
+> service that keep writing it. They re-read the switch and restore it when the run ends or you
+> interrupt it, but they do that on their own: outside the Sentinel gate, outside the `AUTHORIZE`
+> ceremony, outside `RollbackContract`, and outside the sealed evidence. IHRA cannot prove their
+> rollback for you, and if the machine dies mid-run nothing puts the switch back at boot. Wiring them
+> into the same contract is the next milestone (IHRA-05); until then, treat them as hand-run tools.
 
 If you have Node.js, `node bin/ihra.mjs <command>` works too. The full list, with every limit spelled out, is in the [technical reference](docs/TECHNICAL.md#cli-commands-and-their-limits).
 
@@ -106,7 +143,12 @@ If you have Node.js, `node bin/ihra.mjs <command>` works too. The full list, wit
 
 **Will this make my games or AI models faster?** Maybe, maybe not. IHRA helps you *find out* honestly. Often the answer is a power profile, a driver setting or a cooling fix, and sometimes there's nothing safe to gain.
 
-**Can it break my PC?** IHRA on its own only reads information and runs a sandboxed test. The risk comes from changes **you** approve, which is why the rules above require a way to undo every change and why dangerous categories are banned. Read what your agent proposes before saying yes.
+**Can it break my PC?** IHRA on its own only reads information and runs a sandboxed test. There is now
+exactly one thing it can change — a power profile — and only in the same terminal where you typed the
+confirmation, after which it re-reads the machine to prove it put things back. The risk comes from
+changes **you** approve, which is why the rules above require a way to undo every change, why a change
+it cannot prove restored blocks all later runs, and why dangerous categories are banned. Read what your
+agent proposes before saying yes.
 
 **Windows or macOS?** Not yet. IHRA reads Linux-specific files (`/proc`, `/sys`).
 

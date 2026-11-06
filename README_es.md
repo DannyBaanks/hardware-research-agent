@@ -71,6 +71,7 @@ A partir de ahí el agente te explica tu hardware, te propone un plan y te ayuda
 | Corre una prueba fija e inofensiva de CPU en un sandbox para ver que los resultados se repitan | Promete más FPS ni una PC más rápida |
 | Rechaza afirmaciones de "más rápido" sin suficientes corridas, hashes y un control (`AntiFake`) | Deja que un agente presuma una sola corrida con suerte |
 | Muestra el estado de NVIDIA Ada y la trampa de energía D3cold (`ada`) | Instala ni ejecuta el desbloqueo experimental de GPU |
+| Prueba **un** cambio de perfil de energía mientras tú tecleas `AUTHORIZE` en esta terminal, y después comprueba que lo regresó (`run-tier1`) | Cambia algo sin que estés presente — y si no puede comprobar que regresó el estado, bloquea todas las corridas siguientes hasta que lo arregles |
 
 ## Qué significan los resultados
 
@@ -90,16 +91,52 @@ A partir de ahí el agente te explica tu hardware, te propone un plan y te ayuda
 | `python3 -m core.cli sentinel 'lscpu'` | ¿Este comando exacto está en la lista de solo lectura? (no ejecuta nada) |
 | `python3 -m core.cli dry-run ada_d3cold_false_positive` | Reproduce el caso de "la GPU que mentía" con datos de ejemplo |
 | `python3 -m core.cli run-synthetic sha256-chain-v1` | Prueba de CPU inofensiva en sandbox (necesita `bubblewrap`) |
+| `python3 -m core.cli run-synthetic-experiment --proposal <archivo>` | Cinco muestras cronometradas en el sandbox, después de que teclees `AUTHORIZE <sha256>` en esta terminal |
+| `python3 -m core.cli inspect-synthetic-campaign <id>` | Lee de nuevo una campaña terminada o interrumpida, hash a hash, sin volver a ejecutar nada |
+| `python3 -m core.cli run-tier1 --set balanced` | Prueba un cambio de perfil con un humano mirando: lo aplica, mide, lo regresa y lo comprueba |
+| `python3 -m core.cli list-faults` | ¿Queda algún cambio sin restaurar? Sale con error mientras quede uno |
+| `python3 -m core.cli resolve-fault <id>` | Comprueba que la máquina volvió a como debe estar y cierra ese registro. En sí no cambia nada |
 | `python3 -m core.cli inspect <archivo>` | Analiza un binario con [REA](https://github.com/DannyBaanks/rea), si lo tienes instalado |
+
+## Cuando algo sale mal
+
+**Una campaña se cortó, la mataron o le diste Ctrl-C.** No la vuelvas a correr ni te fíes de la última
+línea del log: lee la evidencia.
+
+```bash
+python3 -m core.cli inspect-synthetic-campaign <id-de-campana>
+```
+
+Revisa el manifiesto archivo por archivo y responde `COMPLETED_VALID`, `INCOMPLETE`,
+`NOT_DEMONSTRATED` o `ACTIVE_OR_UNKNOWN`. No reanuda nada y nunca hace ver una campaña vieja mejor de
+lo que fue. Cada una de las cinco muestras sella su propio recibo antes de empezar la siguiente, así
+que un corte cuesta a lo sumo la muestra que estaba corriendo y la evidencia dice exactamente dónde
+paró. **Reanudar automáticamente no está implementado**: el checkpoint te dice dónde quedó y tú decides.
+
+**Un cambio de perfil no regresó.** El runner de Tier-1 lo dice claro, imprime los comandos para
+regresarlo y deja un registro de emergencia. Mientras ese registro esté abierto, IHRA no corre ninguna
+campaña más — el sandbox incluido. Tú arreglas la máquina a mano y después `resolve-fault <id>`
+comprueba que el estado coincide con lo que pide el registro y lo cierra. Así está diseñado:
+**IHRA se detiene, no repara.** No hay ningún servicio de fondo que restaure algo al arrancar el PC.
 
 ## Experimentos y recetas listos
 
 | Qué | Cómo correrlo | Qué cambia |
 |---|---|---|
-| **¿El turbo ayuda en mi PC?** Prueba justa con y sin turbo, con watts, relojes, temperatura y hashes | [`experiments/cpu-boost`](experiments/cpu-boost/README.md) | Solo el interruptor del turbo, siempre se restaura |
-| **Turbo inteligente:** encendido con cargador, apagado en batería | [`recipes/smart-boost`](recipes/smart-boost/README.md) | Agrega 3 archivos; `uninstall.sh` los quita |
+| **¿El turbo ayuda en mi PC?** Prueba justa con y sin turbo, con watts, relojes, temperatura y hashes | [`experiments/cpu-boost`](experiments/cpu-boost/README.md) | El interruptor del turbo. Lo regresa al terminar y con Ctrl-C — pero **por fuera** del gate de seguridad de IHRA, lee abajo |
+| **Turbo inteligente:** encendido con cargador, apagado en batería | [`recipes/smart-boost`](recipes/smart-boost/README.md) | Agrega 3 archivos, uno de los cuales vuelve a prender el interruptor en cada arranque; `uninstall.sh` los quita |
 
 Necesitan `sudo` porque tocan un ajuste del sistema. Tu agente te los explica; **tú** los corres.
+
+> [!WARNING]
+> Estos dos son **scripts que tú corres, no capacidades de IHRA**. `run_boost_matrix.py` escribe
+> `/sys/devices/system/cpu/cpufreq/boost` con `sudo`, y `smart-boost` instala una regla udev más un
+> servicio que siguen escribiendo ese interruptor. Releen el valor y lo regresan cuando termina la corrida
+> o cuando los interrumpes, pero lo hacen solos: por fuera del gate de Sentinel, por fuera de la ceremonia
+> `AUTHORIZE`, por fuera de `RollbackContract` y por fuera de la evidencia sellada. IHRA no puede
+> comprobar ese rollback por ti, y si la máquina se cae a mitad nada regresa el interruptor al arrancar.
+> Meterlos en el mismo contrato es el siguiente hito (IHRA-05); mientras tanto trátalos como herramientas
+> manuales.
 
 Si tienes Node.js, `node bin/ihra.mjs <comando>` también funciona. La lista completa, con cada límite explicado, está en la [referencia técnica](docs/TECHNICAL_es.md#referencia-de-comandos-y-advertencias).
 
@@ -107,7 +144,12 @@ Si tienes Node.js, `node bin/ihra.mjs <comando>` también funciona. La lista com
 
 **¿Esto hará más rápidos mis juegos o mis modelos de IA?** Puede que sí, puede que no. IHRA te ayuda a *averiguarlo* con honestidad. Muchas veces la respuesta está en un perfil de energía, un ajuste del driver o la refrigeración, y a veces no hay nada seguro que ganar.
 
-**¿Puede dañar mi PC?** IHRA por sí solo solo lee información y corre una prueba en sandbox. El riesgo viene de los cambios que **tú** apruebes. Por eso las reglas de arriba exigen una forma de deshacer cada cambio y prohíben las categorías peligrosas. Lee lo que te propone el agente antes de decir que sí.
+**¿Puede dañar mi PC?** IHRA por sí solo solo lee información y corre una prueba en sandbox. Ahora hay
+exactamente una cosa que puede cambiar — un perfil de energía — y solo en la misma terminal donde tecleaste
+la confirmación, después de lo cual relee la máquina para comprobar que lo regresó. El riesgo viene de los
+cambios que **tú** apruebes. Por eso las reglas de arriba exigen una forma de deshacer cada cambio, por eso
+un cambio que no se pueda comprobar regresado bloquea las corridas siguientes, y por eso las categorías
+peligrosas están prohibidas. Lee lo que te propone el agente antes de decir que sí.
 
 **¿Windows o macOS?** Todavía no. IHRA lee archivos propios de Linux (`/proc`, `/sys`).
 

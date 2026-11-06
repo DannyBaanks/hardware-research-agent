@@ -3,7 +3,7 @@
 ## Estado
 READY — 6 milestones (M0–M5). Baseline verificado 2026-11-05: rama `main`, HEAD `a7ce064`, árbol limpio, `python3 -m unittest discover -s tests` → **143 tests OK** (≈5.9 s). `powerprofilesctl` presente (`/usr/bin/powerprofilesctl`, perfil actual `performance`); `bwrap` presente.
 
-**Avance 2026-11-06:** M0–M4 implementados y comiteados (ver *Registro de ejecución*); queda M5 (docs). Suite: **191 tests OK**; `sentinel lscpu` → AUTHORIZED exit 0; `sentinel 'powerprofilesctl set balanced'` → DENIED exit 1. La ronda Tier-1 real con humano al TTY sigue pendiente de ejecutarse.
+**Avance 2026-11-06:** M0–M5 implementados y comiteados (ver *Registro de ejecución*). Suite: **191 tests OK**; `sentinel lscpu` → AUTHORIZED exit 0; `sentinel 'powerprofilesctl set balanced'` → DENIED exit 1. La documentación dejó de prometer lo que el código no hace: `AF-09`, `AF-02`, `AF-10` y `AF-12` constan como NO demostrados, y `run_boost_matrix.py` aparece en README/TECHNICAL/SAFETY_CONTRACTS como herramienta manual fuera del contrato. Queda pendiente la **ronda Tier-1 real con humano al TTY**, que es la verificación que pidió Danny y no se puede sustituir con fixtures.
 
 ## Objetivo
 
@@ -199,8 +199,8 @@ Ejecutado 2026-11-05 → 2026-11-06. Un commit por milestone, sin push.
 | M1 | `29629cc` | `tests/test_grant_expiry.py` (expiry, orden expiración→`_used`, token) |
 | M2 | `9ec0d11` | `tests/test_sentinel_plan_validation.py` (validador stdlib ≡ schema) |
 | M3 | `d6bc601` | `tests/test_campaign_rollback.py` (9) + allowlists de `recovery.py` |
-| M4 | este commit | `tests/test_tier1_safety.py` (9); suite completa 191 OK |
-| M5 | pendiente | docs honestos + cierre de IHRA-03 M5 |
+| M4 | `a6fb916` | `tests/test_tier1_safety.py` (9); suite completa 191 OK |
+| M5 | este commit | docs: `ARCHITECTURE.md`, `SAFETY_CONTRACTS.md`, `TECHNICAL.md`, `TECHNICAL_es.md`, `ANTIFAKE_TEST_MATRIX.md`, `README.md`, `README_es.md`, `ROADMAP.md`, `AGENTS.md` |
 
 Desviaciones respecto al plan (todas más estrictas o de alcance menor, nunca más permisivas):
 
@@ -215,3 +215,7 @@ Desviaciones respecto al plan (todas más estrictas o de alcance menor, nunca m�
 9. **M4** — `SentinelGate.verify_grant()` sigue siendo la revalidación del tier 0: un grant Tier-1 no la pasa y falla cerrado. La autoridad Tier-1 se revalida consumiendo el grant contra los tres digest.
 10. **M4** — Cambió el texto de la razón de Sentinel para Tier-1 (dos aserciones actualizadas a propósito en el mismo commit). El texto viejo afirmaba que expiry y rollback no existían, lo cual es falso desde M1/M3; el nuevo niega el mismo camino y añade que el bloqueo es una decisión.
 11. **Operativo** — Con un estado de fallo sin resolver quedan denegadas todas las campañas, incluidas las de la suite de pruebas, hasta que una persona ejecute la remediación y `resolve-fault`.
+12. **M5** — `docs/TECHNICAL_es.md` no estaba en el plan pero replicaba los mismos enunciados falsos («pieza independiente», «los cambios de nivel 1/2 siguen deshabilitados», «la campaña fija no está conectada a rollback»). Se corrigió en paralelo: los dos idiomas afirman lo mismo o el inglés pasa por el canónico y el español sigue mintiendo.
+13. **M5** — `docs/ANTIFAKE_TEST_MATRIX.md` no tenía columna de estado; el plan sólo pedía dejar AF-09 como NO demostrado. Se añadió una sección *Status against the code on disk* con las doce filas, porque AF-02 (normalización por GHz), AF-10 (`RESOURCE_PRESSURE_ABORT`) y AF-12 tampoco se cumplen, y una matriz sin estado se lee como un checklist pasado.
+14. **M5** — `AGENTS.md` ganó una regla de comportamiento (Tier-1 lo arranca el humano en su terminal; `list-faults` vacío antes de proponer otra campaña) y la lista de módulos de `core/`. No estaba en el plan, no toca código y hace más estrecha la conducta del agente, no más ancha.
+15. **M5** — En `docs/ARCHITECTURE.md` se anotaron también el diagrama ASCII y la máquina de estados: el polling térmico/de memoria con abort no existe, y el token del grant es un HMAC por proceso que liga digests, no una firma de evidencia. Sin esas notas el diagrama seguía describiendo componentes imaginarios por su cuenta.

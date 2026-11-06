@@ -10,10 +10,11 @@
 
 ## 1. Structure & Workflows
 * `docs/`: Master forensic case studies (`HISTORY_ADA_D3COLD.md`, `HISTORY_REA_CPU_01.md`), protocol specs (`COMMON_RESEARCH_PIPELINE.md`, `ARCHITECTURE.md`, `SAFETY_CONTRACTS.md`), and test matrices.
-* `core/`: Decoupled engine modules (`discovery.py`, `sentinel.py`, `verifier.py`, `rollback.py`).
+* `core/`: Decoupled engine modules (`discovery.py`, `sentinel.py`, `verifier.py`, `rollback.py`, `authorization.py`, `experiment.py`, `tier1.py`, `recovery.py`, `cli.py`).
 * `adapters/`: Hardware capability detectors (`linux_inventory`, `linux_cpu_perf`, `nvidia_telemetry`, `amd_xdna_discovery`).
 * `fixtures/`: Synthetic failure cases (including the Ada D3cold trap).
 * `tests/`: Automated unit and adversarial test suite.
+* **Acting as an agent:** the CLI is the only sanctioned surface. `sentinel` classifies without executing, and Tier-0 read-only commands are yours to run. Anything that changes state (`run-tier1`) must be launched by the human in their own terminal, because the authorization is theirs, not yours — you prepare it, explain the exact undo, and hand over the command line. Before proposing another campaign, run `list-faults`: an open record means the host is not where a plan said it was, and IHRA will deny execution until that record is resolved.
 
 ## 2. Before Committing
 * Run `python3 -m unittest discover -s tests -v` (must exit 0 with 0 failures).

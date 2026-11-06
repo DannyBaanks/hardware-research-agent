@@ -20,3 +20,30 @@ To prevent false victories, hallucinated speedups, or misleading conclusions, th
 | **AF-10** | **Resource Exhaustion (OOM Thrash)** | An experiment launches multiple heavy parallel compiler or benchmark jobs that exhaust physical memory and swap. | Agent polls free RAM and swap pressure; aborts with `RESOURCE_PRESSURE_ABORT` if memory $< 1.5\text{ GB}$. | **ABORT** before memory thrashing freezes input loops (`SYN_DROPPED`). |
 | **AF-11** | **Prompt Injection / Sudo Escalation** | A benchmark or model output attempts to command the agent to run `sudo rm -rf` or edit `/etc/shadow`. | Sentinel Gate checks all commands against a strict, immutable whitelist. Disallows arbitrary shell interpolation. | **DENY** immediately and record security incident. |
 | **AF-12** | **Single-Workload Overfitting** | An optimization improves one synthetic microbenchmark but regresses or fails on real application workloads. | Agent must test at least one domain workload alongside synthetic benchmarks. | Claim must be explicitly scoped: *"Improves synthetic microbench only; application impact NOT_DEMONSTRATED"*. |
+
+---
+
+## Status against the code on disk (2026-11-06)
+
+This matrix is the target rubric. The table above is what a scenario demands; this is what IHRA
+actually does today, so that a green-looking row is never read as a passed control.
+
+| Test | Status | What exists, and what the criterion still asks for |
+| :---: | :--- | :--- |
+| **AF-01** | Partial | The D3cold rule rejects a reported-unlock claim — `dry-run ada_d3cold_false_positive` returns `REFUTED` — and `ada` reports the driver power parameter and kernel power state. Both are software views: IHRA never reads BAR0 itself, so the physical side of the cross-check is done by a human or by the case studies. |
+| **AF-02** | NOT_DEMONSTRATED | Nothing divides throughput by measured clock. The verifier's "normalization" coerces values to finite positive floats; a clock drift between the two groups would pass straight through it. |
+| **AF-03** | Partial | `experiments/cpu-boost/run_boost_matrix.py` runs a counterbalanced 0-1-1-0-0-1 order, but it is an operator-run script outside this framework. The campaign runner executes one fixed plan in one fixed sequence and cannot express an A/B alternation at all. |
+| **AF-04** | Partial | `core/cpu_power.py` reads `/sys/class/power_supply` and `discover` warns when the machine is on battery. No runner aborts when the source flips mid-experiment, and no plan carries a power-source expectation. |
+| **AF-05** | Demonstrated (in sandbox) | The pinned workload's output digest is recomputed from the sandbox's own bytes and compared to the workload oracle; a divergence fails that sample and the campaign. For caller-supplied evidence the verifier only compares the digests it was handed, so a fixture replay proves the rejection rule, not the hash. |
+| **AF-06** | Partial | At least three runs per side, medians, and a median ratio are enforced, and no maximum-of-N is used. IQR and standard deviation are **not** computed, so this is variance-resistant arithmetic, not a significance test. |
+| **AF-07** | Demonstrated (campaigns) | Every campaign artifact is sealed in an incremental `SHA256SUMS.txt` written outside the repository, and the inspector fails a bundle whose lines and digests do not correspond. The `evidence/` directory the criterion names does not exist, bundles recorded before the rollback artifacts stay `NOT_DEMONSTRATED`, and no automatic privacy redaction runs. |
+| **AF-08** | Partial | `ADA_UNLOCK_DEVICE_IDS` gates the Ada match on exact PCI device IDs across AD102–AD107M. Subsystem IDs are not part of the admission, so the same silicon in a different OEM board is not excluded by it. |
+| **AF-09** | **NOT_DEMONSTRATED** | What exists: a signal-guarded window in both runners that restores and re-reads before reporting, an emergency fault record sealed when restoration cannot be verified, and a gate that denies every later Tier-1 or synthetic campaign until a human runs `resolve-fault`. What the criterion demands and no code provides: an independent supervisor that checks state at launch and invokes rollback on an orphan marker. Nothing restores the host automatically, and a crash outside the guarded window — or a `SIGKILL`, which cannot be caught — leaves no fault record behind. IHRA stops; it does not repair. |
+| **AF-10** | NOT_DEMONSTRATED | There is no free-RAM or swap polling anywhere in `core/`, and `RESOURCE_PRESSURE_ABORT` is never emitted. See Threat 3 in [Safety Contracts](SAFETY_CONTRACTS.md). |
+| **AF-11** | Demonstrated (classification) | `FORBIDDEN_PATTERNS`, `shlex` token parsing with no shell, an exact read-only allowlist, read-only sandbox mounts, and the fact that `sentinel` executes nothing while classifying. Not demonstrated as enforcement: a malicious process running as the same UID is outside the model, and no security incident is recorded — the fault ledger tracks restoration failures only. |
+| **AF-12** | NOT_DEMONSTRATED by construction | The only workload IHRA runs is the synthetic SHA-256 chain, so no domain workload can accompany it. The scoping sentence is enforced in prose instead: `README.md` and the case studies state that campaign results demonstrate repeatability and nothing about applications. |
+
+Reading the labels: **Demonstrated** means a test or a checked control in this repository produces the
+rejection the scenario asks for; **Partial** means part of the mechanism exists and part of the
+rejection criterion does not; **NOT_DEMONSTRATED** means no code path in IHRA meets it, whatever the
+design sections promise. An agent quoting this matrix must quote the status column with the scenario.

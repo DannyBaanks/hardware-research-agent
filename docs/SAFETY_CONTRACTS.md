@@ -1,6 +1,6 @@
 # Safety Contracts & Threat Model: IHRA
 
-> These contracts describe the intended policy, not guarantees already enforced by the prototype. Current code classifies an exact read-only allowlist, denies state-changing Sentinel requests, replays fixed synthetic fixtures, runs one pinned CPU-only workload in a rootless Bubblewrap sandbox, and can orchestrate one fixed five-sample synthetic repeatability campaign after an explicit local TTY confirmation bound to its proposal and plan digests. Proposals are inert, closed-schema data. TTY confirmation is not cryptographic identity and does not protect against malicious processes running as the same UID. IHRA does not implement an executor for arbitrary experiment plans or an authenticated write-approval lifecycle; see `README.md`.
+> These contracts describe the policy the code enforces today, with the limits spelled out. Current code classifies an exact read-only allowlist and denies state-changing requests in unattended mode; runs a fixed five-sample synthetic campaign only after a one-use local TTY confirmation bound to its proposal and plan digests, with a monotonic expiry; performs one reversible `powerprofilesctl` profile change only when that same TTY confirmation is bound to the exact plan bytes **and** to the intervention the plan declares, capturing the host state first, persisting prestate/poststate/rollback evidence into the campaign manifest, and always running and re-verifying the authorized restoration; refuses every later campaign while a restoration it could not verify is on record. Proposals are inert, closed-schema data. TTY confirmation is not cryptographic identity and does not protect against malicious processes running as the same UID. IHRA does not implement an executor for arbitrary experiment plans, Tier 2 execution, sensor polling, or automatic repair of the host after a crash; see `README.md`.
 
 The observed adversarial results and the distinction between simulated tests and real Linux process checks are recorded in [IHRA-01 Synthetic Experiment Controls](SYNTHETIC_EXPERIMENT_CONTROLS.md). A passing five-sample campaign demonstrates repeatability and contract analysis only; it is not evidence of performance improvement or hardware autonomy.
 
@@ -22,6 +22,8 @@ The observed adversarial results and the distinction between simulated tests and
 | **Tier 1** | **User-Space Reversible** | Standard DBus/PolicyKit switches (e.g. `powerprofilesctl set`, setting CPU governor within kernel limits). | Explicit Human Consent | **YES** |
 | **Tier 2** | **Privileged Reversible** | Modprobe options (`/etc/modprobe.d/`), modifying tempfiles rules, service restarts via systemd. | Explicit Human Consent + Rollback Hook | **REQUIRES SEPARATE AUTHORIZATION** |
 | **Tier 3** | **Dangerous / Destructive** | Writing to BIOS/UEFI/firmware ROMs, direct SMU mailbox writes, direct EC fan register writes, MSR writes, undervolting/overclocking. | **STRICTLY FORBIDDEN** | **NO** |
+
+**What this table means in code today.** Tier 0 is the Sentinel allowlist: exact, no-argument read-only commands, classified without executing anything. Tier 1 is reachable only through `python3 -m core.cli run-tier1`, only for the single `powerprofilesctl set <supported profile>` command, and only with a one-use local TTY confirmation bound to the exact plan bytes and to the intervention those bytes declare; `SentinelGate.evaluate_plan()` still denies Tier 1 for every unattended caller, so autonomy does not acquire a write path. Tier 2 has no code path at all — nothing in `core/` writes modprobe options, tmpfiles rules or systemd units. Tier 3 is denied twice over, by the forbidden patterns and by the allowlist.
 
 ---
 
@@ -60,6 +62,15 @@ class RollbackContract:
 
 If `verify_restoration()` returns `False`, the agent enters an **Emergency Fault State**, alerts the operator, prints immediate manual remediation commands, and refuses to run further experiments.
 
+**Implementation status.** `core/rollback.py` implements this interface over the monitored CPU power surface (`scaling_driver`, `governor`, `energy_performance_preference`, `boost_enabled`, `boost_control`, `platform_profile` — read from sysfs only, with no subprocess and no sleeping per observation), and `core/sentinel.py` refuses any state-changing plan whose declared `restoration_command`, `verification_query` or `expected_restored_state` this controller could not verify. Two runners are coupled to it:
+
+* `core/experiment.py` (fixed synthetic campaign, Tier 0): captures the prestate before dispatch, denies the campaign if that read fails, and seals `prestate.json`, `poststate.json` and `rollback.json` into the campaign directory under its SHA-256 manifest.
+* `core/tier1.py` (one authorized profile change): refuses to start unless the host is already where the authorized restoration puts it, records `intervention.json` and `measurement.json`, and runs plus re-verifies the restoration on every exit path, including from a `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT` handler.
+
+`rollback_status` is derived from those two observations and is never supplied by a caller: `VERIFIED_UNCHANGED` (nothing was changed and the surface still matches), `RESTORED_VERIFIED` (it was changed and the restoration matched the prestate), `FAILED_STATE_DIFF` (it differs and stands). `FAILED_STATE_DIFF` writes one emergency fault record under `$XDG_STATE_HOME/ihra/tier1-faults/` with the remediation commands, and from then on every Tier-1 and synthetic campaign is denied until a person runs those commands and `python3 -m core.cli resolve-fault <id>`, which only re-observes the host and never writes it. A campaign that drifted without declaring an intervention is recorded, not treated as an emergency: IHRA does not know who moved the host, so it does not claim a repair obligation it never took.
+
+What is **not** implemented: no supervisor restores the host when IHRA is next launched after a power loss or a `SIGKILL` (see `docs/ANTIFAKE_TEST_MATRIX.md` AF-09), fault records are not cryptographically signed, and Tier 2 restoration hooks do not exist.
+
 ---
 
 ## 5. Threat Model & Privacy Redaction
@@ -70,10 +81,12 @@ If `verify_restoration()` returns `False`, the agent enters an **Emergency Fault
 
 ### Threat 2: Privacy Leakage in Evidence Bundles
 * **Threat:** Evidence bundles contain private identifiers (MAC address, board serial number, machine UUID, local usernames, absolute directory structures).
-* **Mitigation:** The `EvidenceRecorder` runs an automated redaction filter on all logs before computing SHA-256 sums:
-  * User home paths (`/home/username/...`) are normalized to `~` or generic relative paths.
-  * MAC addresses are masked to `XX:XX:XX:XX:XX:XX`.
-  * Machine UUIDs in `/etc/machine-id` and DMI serials are replaced with pseudorandom hashes.
+* **Mitigation as designed (NOT IMPLEMENTED):** the `EvidenceRecorder` described here, which runs an automated redaction filter over every log before computing SHA-256 sums (home paths normalized to `~`, MACs masked, machine and DMI identifiers replaced by pseudorandom hashes), does not exist. No redaction step runs anywhere in `core/`, and there is no `core/recorder.py`. `AGENTS.md` requires the same check to be done by hand before anything is staged or published.
+* **What actually limits exposure today:** nothing that IHRA records needs a private identifier. The synthetic and Tier-1 bundles store canonical plan and proposal bytes, digests, allowlisted profile names, the monitored sysfs node values, counters, timestamps and typed receipts; the host reads are the fixed allowlisted read-only commands. Two exceptions are explicit: an emergency fault record stores the absolute `evidence_dir` of the campaign that failed, which contains the local username, and a failure `reason` can echo the text of an OS error. Publishing a bundle remains a human step, so check before attaching it to an issue:
+
+  ```bash
+  grep -RInE '([0-9a-f]{2}:){5}[0-9a-f]{2}|/home/|machine-id' <bundle-or-record>
+  ```
 
 ### Threat 3: Host Resource Starvation (OOM / Thrashing)
 * **Threat:** Parallel compiler bursts or heavy vector benchmarks exhaust physical memory, triggering kernel thrashing and freezing the host desktop.
@@ -83,33 +96,38 @@ If `verify_restoration()` returns `False`, the agent enters an **Emergency Fault
 
 ## 6. Authority Lifetime and Execution Coupling
 
-This is the contract IHRA-04 implements. It is a specification, not a claim about current code.
+This is the contract IHRA-04 was written for and implemented in M1–M4. Each item below names the code that enforces it and the test that would fail if it drifted.
 
 ### 6.1 Expiration
 
 * Authority validity is decided on a **monotonic deadline** (`time.monotonic`). Wall-clock time never participates in an authorization decision.
 * `issued_at` and `expires_at` are additionally recorded in ISO-8601 UTC inside evidence artifacts so a human can read them; those fields are reporting only.
 * `DEFAULT_TTL_SECONDS = 120` is fixed in code. It must be greater than or equal to the authorized plan's `max_total_duration` (60 s today), so a valid grant cannot expire mid-campaign while the campaign is still inside its own ceiling.
-* **TTL is not a caller-supplied parameter.** No function argument, CLI flag or environment variable may lengthen it: an agent that can choose its own TTL grants itself more time.
+* **TTL is not a caller-supplied parameter.** No function argument, CLI flag or environment variable may lengthen it: an agent that can choose its own TTL grants itself more time. A caller may only shorten it, and `_validate_ttl` rejects a non-numeric, zero, negative or oversized value.
+* Enforced in `core/authorization.py` (`remaining_seconds`, `expired`, the backwards-clock rule) and `SentinelGate.verify_grant`; held by `tests/test_grant_expiry.py`, including `test_expired_grant_denies_before_dispatch`, `test_expired_grant_is_not_consumed` and `test_ttl_revalidated_before_each_sample`.
 
 ### 6.2 Grant token
 
-* Every grant carries a token: `HMAC-SHA256(key, plan_sha256 || proposal_sha256 || issued_at)`.
+* Every grant carries a token: `HMAC-SHA256(key, plan_sha256 || experiment_id || expires_at)`, joined with NUL separators over the canonical plan digest and the monotonic deadline.
 * The key is generated per process with `secrets.token_bytes(32)` and is never persisted.
 * **What the token is:** an anti-replay and self-consistency binding inside one process, so a grant cannot be reused, reordered or rebuilt from a different plan.
 * **What the token is not:** identity. A process running as the same UID can read the key from process memory. Consistent with §1.3 and with the TTY warning in `core/authorization.py`, no cryptographic human identity is claimed here.
+* Held by `test_grant_binds_the_plan_digest`, `test_grant_rejects_a_mutated_plan` and `test_forged_grant_object_is_rejected`.
 
 ### 6.3 Digest coupling
 
 * The command that executes must be byte-identical to the command that Sentinel classified, proven through the canonical plan digest rather than through a matching string.
 * A grant is re-validated before dispatch and before every sample. Expiration is checked **before** a single-use grant is marked consumed, so an expired grant does not burn the TTY ceremony.
+* A Tier-1 state change binds a third digest: `intervention_sha256`, taken over the canonical bytes of the intervention the gate derives from the plan's own declared command and rollback (`tier1_intervention_digest`). A grant minted for one intervention cannot be spent on another plan, and a grant minted without one cannot open the Tier-1 leg at all. Tier 1 has no proposal artifact, so the ceremony records the plan digest in the proposal slot as well and says so in the emitted evidence.
+* `SentinelGate.verify_grant` re-checks Tier-0 grants; a Tier-1 grant does not pass it and falls closed. Tier-1 authority is spent instead by `PlanAuthorization.consume` against all three digests. Held by `tests/test_tier1_safety.py`.
 
 ### 6.4 Rollback coupling
 
-* `rollback_status` is derived from observed prestate and poststate reads. It is never a literal.
-* A failed prestate read denies the experiment; recording it as `None`, empty or `unknown` is forbidden, because a missing baseline silently converts "we do not know the state" into "the state was fine".
-* Restoration is verified by re-reading state; an unverified restoration is a `FAULT_STATE`, which blocks subsequent experiments until resolved.
+* `rollback_status` is derived from observed prestate and poststate reads. It is never a literal: `VERIFIED_UNCHANGED`, `RESTORED_VERIFIED` or `FAILED_STATE_DIFF` (`ROLLBACK_*` in `core/rollback.py`), and `core/recovery.py` re-derives it from the sealed states when it inspects a campaign, so relabelling a drift as "unchanged" is rejected.
+* A failed prestate read denies the experiment; recording it as `None`, empty or `unknown` is forbidden, because a missing baseline silently converts "we do not know the state" into "the state was fine". `monitored_state` raises instead of returning `None`.
+* An unverified restoration is `FAILED_STATE_DIFF`, and it writes an emergency fault record that blocks subsequent Tier-1 and synthetic experiments until a person resolves it (§4). Automatic repair on the next launch is **not** implemented: IHRA stops, it does not fix.
+* Held by `tests/test_campaign_rollback.py` and `tests/test_tier1_safety.py`; the recovery side by `tests/test_campaign_recovery.py`.
 
 ### 6.5 Known gap: real hardware writes outside this contract
 
-`experiments/cpu-boost/run_boost_matrix.py` writes `/sys/devices/system/cpu/cpufreq/boost` under `sudo`. It re-reads the knob around every job and restores it on signals, but it does so **outside** the Sentinel gate, outside `PlanAuthorization`, outside `RollbackController` and outside the campaign manifest, and its signal handler prints the read-back instead of comparing it with the captured value. `recipes/smart-boost/install.sh` installs a udev rule and a service that keep writing the same knob. Closing this is IHRA-05 work; until then this document does not describe that script.
+`experiments/cpu-boost/run_boost_matrix.py` writes `/sys/devices/system/cpu/cpufreq/boost` under `sudo`. It re-reads the knob around every job and restores it on signals, but it does so **outside** the Sentinel gate, outside `PlanAuthorization`, outside `RollbackController` and outside the campaign manifest, and its signal handler prints the read-back instead of comparing it with the captured value. `recipes/smart-boost/install.sh` installs a udev rule and a service that keep writing the same knob. Closing this is IHRA-05 work. Until it is closed, both are **operator-run tools, not IHRA capabilities**: `README.md`, [TECHNICAL](TECHNICAL.md) and [TECHNICAL (es)](TECHNICAL_es.md) each say so where they are listed, and no contract in this document covers them or guarantees their restoration.

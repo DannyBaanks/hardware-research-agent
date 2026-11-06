@@ -1,12 +1,25 @@
 # ROADMAP — ISyCo Hardware Research Agent (IHRA)
 ## De la investigación Ada `D3cold` y REA-CPU-01 a un pipeline portátil de investigación de hardware
 
-**Estado:** PROPOSAL / DEFERRED — **no implementar todavía**  
+**Estado:** [HISTORICAL] PROPOSAL / DEFERRED — **no implementar todavía**
+
 **Fecha:** 2026-11-02  
 **Destino:** futuro repositorio independiente de metodología y herramientas para agentes en Linux  
 **Propietario conceptual:** ISyCo / Danny  
 **Condición de arranque:** el agente encargado de **REA-CPU-01** debe **terminar, cerrar y sellar** su investigación actual antes de ejecutar este roadmap.  
 **Principio rector:** *«No es un optimizador mágico. Es un protocolo de investigación reproducible y supervisada, capaz de concluir que NO hay una optimización segura».*
+
+> **[HISTORICAL] — nota de 2026-11-06, no una reescritura.** Se conserva todo el texto anterior tal como
+> se escribió. Lo que ya no es cierto es la etiqueta: el repositorio existe, está publicado
+> (`DannyBaanks/hardware-research-agent`) y una parte sustancial del pipeline de este documento corre hoy
+> en `core/` — descubrimiento de solo lectura, clasificación Sentinel con tiers, sandbox Bubblewrap con
+> plan fijo y campaña de cinco muestras, expiración y ligadura por digest del permiso, rollback acoplado a
+> la ejecución con evidencia hasheada, y una única ruta Tier-1 que cambia un perfil de energía con un humano
+> tecleando en la TTY. La superficie real y sus límites están en [docs/TECHNICAL.md](docs/TECHNICAL.md), y
+> el registro por hitos en [plans/ihra-autonomy-safety-prerequisites.md](plans/ihra-autonomy-safety-prerequisites.md).
+> No obstante: este archivo sigue siendo útil como historia de *por qué* se diseñó el protocolo. La
+> prohibición de abajo (BIOS, UEFI, ACPI, SMU, MSR, térmicos, firmware) **sigue vigente**: el nivel 3 nunca
+> se implementa, y lo único que cambió es que el nivel 1 exige una persona presente.
 
 > **IMPORTANTE PARA EL AGENTE FUTURO:** este archivo es una guía diferida. No autoriza cambios de BIOS, UEFI, ACPI, SMU, MSR, firmware, voltajes, límites térmicos, módulos kernel ni instalación de software. Tampoco autoriza crear/publicar un repositorio sin confirmar con el usuario. Preservar el experimento CPU vigente; no interrumpirlo ni anticipar conclusiones.
 
