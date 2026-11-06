@@ -200,7 +200,7 @@ Ejecutado 2026-11-05 → 2026-11-06. Un commit por milestone, sin push.
 | M2 | `9ec0d11` | `tests/test_sentinel_plan_validation.py` (validador stdlib ≡ schema) |
 | M3 | `d6bc601` | `tests/test_campaign_rollback.py` (9) + allowlists de `recovery.py` |
 | M4 | `a6fb916` | `tests/test_tier1_safety.py` (9); suite completa 191 OK |
-| M5 | este commit | docs: `ARCHITECTURE.md`, `SAFETY_CONTRACTS.md`, `TECHNICAL.md`, `TECHNICAL_es.md`, `ANTIFAKE_TEST_MATRIX.md`, `README.md`, `README_es.md`, `ROADMAP.md`, `AGENTS.md` |
+| M5 | `1467970` | docs: `ARCHITECTURE.md`, `SAFETY_CONTRACTS.md`, `TECHNICAL.md`, `TECHNICAL_es.md`, `ANTIFAKE_TEST_MATRIX.md`, `README.md`, `README_es.md`, `ROADMAP.md`, `AGENTS.md` |
 
 Desviaciones respecto al plan (todas más estrictas o de alcance menor, nunca más permisivas):
 
