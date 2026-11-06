@@ -99,6 +99,7 @@ A partir de ahí el agente te explica tu hardware, te propone un plan y te ayuda
 | `python3 -m core.cli list-faults` | ¿Queda algún cambio sin restaurar? Sale con error mientras quede uno |
 | `python3 -m core.cli resolve-fault <id>` | Comprueba que la máquina volvió a como debe estar y cierra ese registro. En sí no cambia nada |
 | `python3 -m core.cli inspect <archivo>` | Analiza un binario con [REA](https://github.com/DannyBaanks/rea), si lo tienes instalado |
+| `python3 -m core.cli setup` | Desde dónde corre IHRA y dónde buscó REA y GPU-Unlock-Ada, resuelto con `REA_HOME` / `ADA_UNLOCK_HOME`; no cambia nada y basta con dejar las dos variables sin definir |
 
 ## Cuando algo sale mal
 
