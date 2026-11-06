@@ -1,6 +1,7 @@
 import hmac
 import os
 import re
+import termios
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -181,6 +182,15 @@ class PlanAuthorization:
 
 
 def _read_confirmation(tty_fd: int, plan_sha256: str) -> bool:
+    # TCIFLUSH only: the proposal summary is still on its way out and flushing
+    # output would drop it. A response queued before the prompt is displayed is
+    # discarded, so what matches below is what the operator saw.
+    try:
+        termios.tcflush(tty_fd, termios.TCIFLUSH)
+    except (OSError, termios.error) as exc:
+        raise AuthorizationDenied(
+            "TTY input queue could not be cleared before the confirmation prompt"
+        ) from exc
     warning = (
         "Local TTY confirmation is operator consent, not cryptographic identity; "
         "same-UID processes are outside this protection.\n"

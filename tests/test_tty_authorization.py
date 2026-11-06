@@ -88,6 +88,29 @@ class TestTtyAuthorization(unittest.TestCase):
         self.assertIn(summary.encode("ascii"), output)
         self.assertIn(self.plan_sha256.encode("ascii"), output)
 
+    def test_a_line_queued_before_the_prompt_cannot_authorize(self):
+        # Consent means the operator answered what was just shown. A line already
+        # waiting in the terminal queue (a pasted multiline block, for instance)
+        # must not satisfy the ceremony, even when it carries the right digest.
+        with self.assertRaisesRegex(AuthorizationDenied, "absent or did not match"):
+            authorize_in_pty(
+                self.plan_sha256,
+                self.proposal_sha256,
+                preload=f"AUTHORIZE {self.plan_sha256}",
+                respond=False,
+            )
+
+    def test_the_answer_typed_after_the_prompt_survives_a_stale_queued_line(self):
+        grant = authorize_in_pty(
+            self.plan_sha256,
+            self.proposal_sha256,
+            preload="AUTHORIZE " + "0" * 64,
+        )
+        self.assertEqual(
+            grant.consume(self.plan_sha256, self.proposal_sha256),
+            self.proposal_sha256,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,8 @@ def authorize_in_pty(
     ttl_seconds=None,
     clock=None,
     intervention_sha256=None,
+    preload=None,
+    respond=True,
 ):
     master_fd, slave_fd = pty.openpty()
     expected = f"AUTHORIZE {plan_sha256}"
@@ -34,13 +36,22 @@ def authorize_in_pty(
                     time.sleep(0.005)
             if b"> " not in output:
                 raise TimeoutError("TTY authorization prompt was not emitted")
-            os.write(master_fd, supplied.encode("ascii") + b"\n")
+            if respond:
+                os.write(master_fd, supplied.encode("ascii") + b"\n")
+            else:
+                # End-of-file so the ceremony resolves instead of hanging when the
+                # operator never answers the prompt that is on the screen.
+                os.write(master_fd, b"\x04")
         except Exception as exc:
             errors.append(exc)
         finally:
             response_sent.set()
 
     os.set_blocking(master_fd, False)
+    if preload is not None:
+        # Typed while the terminal was idle, so it sits in the input queue before
+        # any prompt exists; the ceremony must not be able to consume it.
+        os.write(master_fd, preload.encode("ascii") + b"\n")
     responder = threading.Thread(target=respond_to_prompt)
     responder.start()
     issued = {}
