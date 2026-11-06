@@ -528,6 +528,94 @@ class TestTier1Safety(unittest.TestCase):
         self.assertEqual(runner.resolve("a" * 32)["status"], FAULT_RESOLVED)
         self.assertEqual(host.commands, [GET, GET])
 
+    def test_an_unreadable_fault_record_denies_instead_of_crashing(self):
+        # The fault state is a traffic light: if a record cannot be read, nothing
+        # may run and the operator must still get the documented denial, not a
+        # traceback after typing their authorization.
+        self._surface("performance")
+        host = self._host()
+        record = {
+            "schema_version": 1,
+            "fault_id": "c" * 32,
+            "recorded_at": "2026-11-06T00:00:00+00:00",
+            "status": FAULT_UNRESOLVED,
+            "reason": "injected close-out failure",
+            "rollback_status": ROLLBACK_FAILED_STATE_DIFF,
+            "experiment_id": "TIER1_POWER_PROFILE_BALANCED",
+            "campaign_id": "c" * 32,
+            "plan_sha256": "b" * 64,
+            "expected_state": None,
+            "observed_state": None,
+            "restoration_command": "powerprofilesctl set performance",
+            "expected_restored_state": "performance",
+            "remediation": ["powerprofilesctl get"],
+            "evidence_dir": None,
+            "resolved_at": None,
+            "resolved_state": None,
+            "resolved_profile": None,
+        }
+        tampers = (
+            ("world-readable record", lambda path: os.chmod(path, 0o644),
+             "not private and owned by the current user"),
+            ("record with a duplicate key",
+             lambda path: path.write_bytes(
+                 b'{"fault_id": "' + b"c" * 32 + b'", "fault_id": "' + b"d" * 32 + b'"}\n'
+             ),
+             "Duplicate JSON key: fault_id"),
+        )
+        for label, tamper, fragment in tampers:
+            with self.subTest(tamper=label):
+                path = write_fault_record(record, base=self.fault_base)
+                tamper(path)
+
+                with self.assertRaises(FaultStateError) as refused:
+                    find_unresolved_faults(self.fault_base)
+                self.assertIn(path.name, str(refused.exception))
+                self.assertIn(fragment, str(refused.exception))
+
+                reported, code = self._list_faults()
+                self.assertEqual(code, 1)
+                self.assertEqual(reported["status"], "DENIED")
+                self.assertEqual(reported["verdict"], "DENY")
+                self.assertIn(fragment, reported["reason"])
+
+                blocked = self._run()
+                self.assertEqual(blocked.status, "DENIED")
+                self.assertIn(fragment, blocked.reason)
+                self.assertIsNone(blocked.evidence_dir)
+                self.assertEqual(host.commands, [])
+
+    def test_resolve_fault_reports_an_unreadable_record_as_a_denial(self):
+        self._surface("performance")
+        path = write_fault_record(
+            {
+                "schema_version": 1,
+                "fault_id": "e" * 32,
+                "recorded_at": "2026-11-06T00:00:00+00:00",
+                "status": FAULT_UNRESOLVED,
+                "reason": "injected close-out failure",
+                "rollback_status": ROLLBACK_FAILED_STATE_DIFF,
+                "experiment_id": "TIER1_POWER_PROFILE_BALANCED",
+                "campaign_id": "e" * 32,
+                "plan_sha256": "b" * 64,
+                "expected_state": None,
+                "observed_state": None,
+                "restoration_command": "powerprofilesctl set performance",
+                "expected_restored_state": "performance",
+                "remediation": ["powerprofilesctl get"],
+                "evidence_dir": None,
+                "resolved_at": None,
+                "resolved_state": None,
+                "resolved_profile": None,
+            },
+            base=self.fault_base,
+        )
+        os.chmod(path, 0o644)
+        with self.assertRaises(FaultStateError) as refused:
+            self._runner().resolve("e" * 32)
+        self.assertIn("Emergency fault record is unreadable", str(refused.exception))
+        self.assertIn("not private", str(refused.exception))
+
     def test_run_tier1_refuses_a_host_the_plan_no_longer_describes(self):
         self._surface("performance")
         host = self._host("balanced")

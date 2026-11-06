@@ -733,7 +733,13 @@ def _open_fault_base(base: Optional[Path]) -> int:
 
 
 def _parse_fault_record(data: bytes, name: str, expected_id: str) -> Dict[str, object]:
-    record = _parse_json(data, name)
+    try:
+        record = _parse_json(data, name)
+    except _InspectionError as exc:
+        # The inspector raises its own ValueError for unreadable bytes; the fault
+        # API promises FaultStateError, and callers only catch that. Without the
+        # translation a leaked record crashes the CLI instead of denying.
+        raise FaultStateError(f"{name} is not a readable fault record: {exc}") from exc
     if set(record) != _FAULT_FIELDS:
         raise FaultStateError(f"{name} has missing or unknown fields")
     if record["schema_version"] != 1 or record["fault_id"] != expected_id:
@@ -781,6 +787,9 @@ def find_unresolved_faults(base: Optional[Path] = None) -> List[Dict[str, object
                 data = _read_regular_file(directory_fd, name)
             except FileNotFoundError:
                 continue
+            except _InspectionError as exc:
+                # Its message already names the record, so it is not prefixed again.
+                raise FaultStateError(f"Emergency fault record is unreadable: {exc}") from exc
             except OSError as exc:
                 raise FaultStateError(f"Emergency fault record is unreadable: {name}: {exc}") from exc
             record = _parse_fault_record(data, name, name[:32])
@@ -854,7 +863,7 @@ def resolve_fault(
             data = _read_regular_file(directory_fd, name)
         except FileNotFoundError as exc:
             raise FaultStateError(f"No emergency fault record is stored for {fault_id}") from exc
-        except OSError as exc:
+        except (OSError, _InspectionError) as exc:
             raise FaultStateError(f"Emergency fault record is unreadable: {exc}") from exc
         record = _parse_fault_record(data, name, fault_id)
         if record["status"] == FAULT_RESOLVED:
