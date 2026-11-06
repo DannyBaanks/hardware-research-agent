@@ -64,7 +64,7 @@ node bin/ihra.mjs discover
 | Comando | Función | Precaución |
 |---|---|---|
 | `python3 -m core.cli discover` | Inventario y lectura de adaptadores | Parte de la detección usa rutas o identificadores específicos |
-| `python3 -m core.cli setup` | Informa ubicaciones de proyectos relacionados | Comprueba **rutas de desarrollo fijadas en el código**; no constituye verificación universal de instalación |
+| `python3 -m core.cli setup` | Informa ubicaciones de proyectos relacionados | La ruta de IHRA sale de dónde está instalado; los relacionados se resuelven con `REA_HOME` / `ADA_UNLOCK_HOME`, y las carpetas `~/Development` son sólo la conjetura de respaldo. No constituye verificación universal de instalación |
 | `python3 -m core.cli ada` | Lee estado NVIDIA y su parámetro de gestión de energía | Informa `NOT_DEMONSTRATED`; el parámetro no prueba estado físico persistente ni seguridad del unlock |
 | `python3 -m core.cli sentinel 'powerprofilesctl get'` | Comprueba un comando exacto de solo lectura contra una lista permitida | Solo clasifica; no ejecuta. Deniega cambios de estado y comandos no incluidos |
 | `python3 -m core.cli dry-run <fixture>` | Reproduce uno de dos fixtures sintéticos incluidos usando el verificador | Solo usa datos fixture; no ejecuta workloads/comandos, no lee ni modifica hardware y no hace rollback |

@@ -64,7 +64,7 @@ node bin/ihra.mjs discover
 | Command | What it does | Important caveat |
 |---|---|---|
 | `python3 -m core.cli discover` | Prints inventory and adapter results | Some GPU/NPU detections rely on a fixed device list or path |
-| `python3 -m core.cli setup` | Reports companion repository locations | Currently checks **hard-coded developer-directory paths**; not a general installation checker |
+| `python3 -m core.cli setup` | Reports companion repository locations | IHRA's own path comes from where it is installed; the companions resolve through `REA_HOME` / `ADA_UNLOCK_HOME`, and the `~/Development` locations are only the fallback guess. Not a general installation checker |
 | `python3 -m core.cli ada` | Reads NVIDIA state and its driver power-management parameter | Reports `NOT_DEMONSTRATED`; a configured parameter is not proof of persistent hardware state or unlock safety |
 | `python3 -m core.cli sentinel 'powerprofilesctl get'` | Checks an exact read-only command against the allowlist | Classification only; no command is executed. All state-changing and unlisted commands are denied |
 | `python3 -m core.cli dry-run <fixture>` | Replays one of two checked-in synthetic evidence fixtures through the verifier | Uses fixture data only; performs zero workload commands, hardware reads, writes, or rollback actions |

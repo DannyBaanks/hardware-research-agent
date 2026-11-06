@@ -30,6 +30,8 @@ cd hardware-research-agent
 python3 -m unittest discover -s tests   # optional: should end with "OK"
 ```
 
+Two optional checks look at projects next to IHRA instead of bundled code: REA (binary forensics) and GPU-Unlock-Ada (NVIDIA power rails). Point `REA_HOME` and `ADA_UNLOCK_HOME` at wherever you keep them — `python3 -m core.cli setup` prints which path each check actually used, and it falls back to guessing `~/Development` when you set nothing. Leave both unset and everything else still works: those lines report `ABSENT` or `Unavailable`.
+
 **2. See what it finds on your PC** (read-only, changes nothing)
 
 ```bash

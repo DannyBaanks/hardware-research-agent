@@ -347,10 +347,18 @@ def cmd_resolve_fault(args):
 
 def cmd_setup(args):
     """Checks and reports repository and toolchain status for agents."""
+    # IHRA reports the repository it is actually running from, not the folder
+    # layout one developer happens to keep.
+    hra_path = Path(__file__).resolve().parent.parent
+    # The companion toolkits are optional and live wherever their owner put them.
+    # The ~/Development paths are a fallback guess; the adapters read the same two
+    # variables, so what setup reports is what they would really use.
     base_dir = Path.home() / "Development"
-    rea_path = base_dir / "rea"
-    ada_path = base_dir / "gpu-unlock-hp" / "gpu-unlock-ada"
-    hra_path = base_dir / "ISyCo Git" / "hardware-research-agent"
+    rea_path = Path(os.environ.get("REA_HOME") or base_dir / "rea")
+    ada_path = Path(
+        os.environ.get("ADA_UNLOCK_HOME")
+        or base_dir / "gpu-unlock-hp" / "gpu-unlock-ada"
+    )
 
     status = {
         "ihra_agent": {

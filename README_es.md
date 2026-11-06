@@ -30,6 +30,8 @@ cd hardware-research-agent
 python3 -m unittest discover -s tests   # opcional: debe terminar en "OK"
 ```
 
+Dos comprobaciones opcionales miran proyectos que viven junto a IHRA en vez de código incluido aquí: REA (forense de binarios) y GPU-Unlock-Ada (raíles de energía de NVIDIA). Señala con `REA_HOME` y `ADA_UNLOCK_HOME` dónde los tengas; `python3 -m core.cli setup` imprime qué ruta usó realmente cada comprobación, y si no defines nada intenta adivinar `~/Development`. Puedes dejar las dos sin definir y todo lo demás sigue funcionando: esas líneas reportan `ABSENT` o `Unavailable`.
+
 **2. Mira qué encuentra en tu PC** (solo lectura, no cambia nada)
 
 ```bash

@@ -8,7 +8,7 @@
 * **Topology:** 6 Cores, 12 Threads (1 CCX, SMT enabled)
 * **Vector Units:** Native AVX-512 (F, DQ, BW, VL, CD, VNNI, BF16)
 * **Operating System:** Ubuntu 24.04 LTS, Linux kernel `7.0.0-42-generic`
-* **Evidence Directory:** [`evidence/REA-CPU-01/`](../../ISyCo/evidence/REA-CPU-01/)
+* **Evidence Directory:** `evidence/REA-CPU-01/` in the ISyCo research monorepo, which is not published as part of IHRA — the pack does not ship in this repository, so a reader cannot re-verify it from a clone; the line below records what was verified where it lives
 * **Cryptographic Verification:** 20/20 artifacts verified with SHA-256 (`SHA256SUMS.txt`)
 
 ---

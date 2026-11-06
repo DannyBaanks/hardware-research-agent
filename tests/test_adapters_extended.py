@@ -14,7 +14,7 @@ from core.sentinel import SentinelGate, SentinelVerdict
 
 class TestReaAdapter(unittest.TestCase):
     def test_rea_probe_when_path_exists(self):
-        adapter = ReaAdapter(rea_path="/home/danny/Development/rea")
+        adapter = ReaAdapter(rea_path="/nonexistent/rea-checkout")
         probe = adapter.probe()
         self.assertIn(probe.status, (CapabilityStatus.SUPPORTED, CapabilityStatus.NOT_APPLICABLE))
         if probe.status == CapabilityStatus.SUPPORTED:
