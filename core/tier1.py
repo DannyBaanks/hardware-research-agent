@@ -56,6 +56,9 @@ from .sentinel import (
 
 RESTORE_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
 _FAULT_ID = re.compile(r"^[0-9a-f]{32}$")
+# The validator demands repetitions >= 3; without a ceiling a hand-written plan
+# could turn one authorized campaign into an unbounded read loop against the host.
+MAX_TIER1_OBSERVATIONS = 16
 
 
 class CampaignInterrupted(Exception):
@@ -162,6 +165,13 @@ class Tier1ExperimentRunner:
         plan_digest = canonical_plan_digest(plan)
         intervention_digest = tier1_intervention_digest(plan)
 
+        repetitions = plan["workload"]["repetitions"]
+        if repetitions > MAX_TIER1_OBSERVATIONS:
+            return self._denied(
+                f"workload.repetitions is {repetitions}; Tier-1 observes the host "
+                f"surface at most {MAX_TIER1_OBSERVATIONS} times per campaign"
+            )
+
         try:
             faults = find_unresolved_faults(self.fault_base)
         except FaultStateError as exc:
@@ -180,6 +190,7 @@ class Tier1ExperimentRunner:
         started_at = _utc_now()
         status, verdict, reason = "ABORTED", "REFUTED", "EXPERIMENT_ABORTED"
         applied = None
+        samples_recorded = 0
         prestate = None
         prestate_bytes = None
         campaign_record = None
@@ -240,16 +251,30 @@ class Tier1ExperimentRunner:
                     f"{receipt.error_message or receipt.verified_state}"
                 )
             else:
+                samples = [
+                    {
+                        "sample": index,
+                        "recorded_at": _utc_now(),
+                        "state": monitored_state(self.sysfs_root),
+                    }
+                    for index in range(1, repetitions + 1)
+                ]
+                samples_recorded = len(samples)
                 store.write_json(
                     "measurement.json",
                     {
+                        "repetitions_declared": repetitions,
+                        "samples_recorded": samples_recorded,
+                        "samples": samples,
                         "recorded_at": _utc_now(),
                         "profile": contract.read_profile(),
-                        "state": monitored_state(self.sysfs_root),
+                        "state": samples[-1]["state"],
                         "performance_claim": False,
                         "note": (
-                            "Tier-1 records the monitored surface after the authorized "
-                            "change; it makes no throughput or latency claim."
+                            "Tier-1 observes the monitored surface once per declared "
+                            "repetition after the authorized change; 'state' is the "
+                            "final observation and 'profile' is the provider read-back. "
+                            "It makes no throughput or latency claim."
                         ),
                     },
                 )
@@ -319,7 +344,7 @@ class Tier1ExperimentRunner:
             plan_digest,
             status,
             verdict,
-            1 if applied is not None else 0,
+            samples_recorded,
             evidence_dir,
             reason,
         )

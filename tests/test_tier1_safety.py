@@ -32,7 +32,11 @@ from core.sentinel import (
     tier1_intervention,
     tier1_intervention_digest,
 )
-from core.tier1 import Tier1ExperimentRunner, build_tier1_plan
+from core.tier1 import (
+    MAX_TIER1_OBSERVATIONS,
+    Tier1ExperimentRunner,
+    build_tier1_plan,
+)
 
 from tests.tty_test_utils import authorize_in_pty
 
@@ -278,11 +282,16 @@ class TestTier1Safety(unittest.TestCase):
         self.assertEqual(result.status, "COMPLETED", result.reason)
         self.assertEqual(result.verdict, "DEMONSTRATED")
         self.assertEqual(result.plan_sha256, self.digest)
-        self.assertEqual(result.samples_completed, 1)
+        # The plan declares repetitions, and the campaign records exactly that
+        # many observations: samples_completed is an observed count, not a literal.
+        self.assertEqual(
+            result.samples_completed, self.plan["workload"]["repetitions"]
+        )
         self.assertTrue(authorization.used)
         self.assertEqual(host.profile, "performance")
 
         # Exactly two writes: the authorized change and the authorized way back.
+        # Three observations add no subprocess, so this sequence is repetition-proof.
         self.assertEqual(
             host.commands, [GET, SET_BALANCED, GET, GET, SET_PERFORMANCE, GET]
         )
@@ -311,6 +320,21 @@ class TestTier1Safety(unittest.TestCase):
         self.assertEqual(measurement["profile"], "balanced")
         self.assertFalse(measurement["performance_claim"])
         self.assertEqual(measurement["state"]["energy_performance_preference"], "balanced")
+        self.assertEqual(
+            measurement["repetitions_declared"], self.plan["workload"]["repetitions"]
+        )
+        self.assertEqual(
+            measurement["samples_recorded"], measurement["repetitions_declared"]
+        )
+        self.assertEqual(
+            [sample["sample"] for sample in measurement["samples"]],
+            list(range(1, measurement["samples_recorded"] + 1)),
+        )
+        for sample in measurement["samples"]:
+            self.assertEqual(
+                sorted(sample["state"]), sorted(measurement["state"])
+            )
+        self.assertEqual(measurement["samples"][-1]["state"], measurement["state"])
 
         campaign = self._json_of(result, "campaign.json")
         self.assertEqual(campaign["status"], "COMPLETED")
@@ -370,6 +394,25 @@ class TestTier1Safety(unittest.TestCase):
             hashlib.sha256(files["poststate.json"].read_bytes()).hexdigest(),
         )
         self.assertTrue(record["restoration_receipt"]["success"])
+
+    def test_repetitions_above_the_ceiling_are_denied_without_touching_the_host(self):
+        self._surface("performance")
+        host = self._host()
+        plan = dict(self.plan)
+        plan["workload"] = dict(
+            self.plan["workload"], repetitions=MAX_TIER1_OBSERVATIONS + 1
+        )
+        # The plan is internally consistent, so its own digests authorize it cleanly;
+        # only a ceiling stands between one campaign and an unbounded read loop.
+        result = self._run(plan)
+        self.assertEqual(result.status, "DENIED")
+        self.assertEqual(result.verdict, "DENY")
+        self.assertEqual(result.samples_completed, 0)
+        self.assertIsNone(result.evidence_dir)
+        self.assertIn(f"at most {MAX_TIER1_OBSERVATIONS} times", result.reason)
+        self.assertEqual(host.commands, [])
+        self.assertEqual(host.profile, "performance")
+        self.assertEqual(find_unresolved_faults(self.fault_base), [])
 
     def test_signal_during_tier1_restores_profile(self):
         self._surface("performance")
