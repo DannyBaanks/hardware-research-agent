@@ -1,5 +1,23 @@
 # Hardware Portability Matrix: Cross-Platform Compatibility
 
+> **What this document is (checked 2026-11-06).** A design matrix: for each hardware family and each
+> privilege environment it states which interfaces the protocol *would* use and which stay out of
+> bounds. It is not validation evidence. No run is recorded here, and the only machine IHRA has
+> actually executed on is this AMD Zen 4 mobile host with an NVIDIA Ada GPU running Linux — see
+> Phase 7 of [IMPLEMENTATION_PLAN §3](IMPLEMENTATION_PLAN.md), `NOT_DEMONSTRATED` for every other row.
+> A "Supported Capabilities" cell therefore means *the discovery interface exists in the code*, not
+> *it was proven on that silicon*.
+>
+> The privilege table is also target design in its second row. Today `core/` and `adapters/` contain
+> no path that loads a module option, writes under `/etc`, installs a udev rule or restarts a
+> service: `core/cpu_power.py` only globs `/etc/udev/rules.d`, `/etc/tmpfiles.d` and systemd unit
+> names to detect a third-party mechanism already configured, and its single `systemctl` call is
+> `is-active`, a status read. The rootless row's DBus profile switch is the one permitted state
+> change, and `powerprofilesctl set` runs only through `core/tier1.py` with a person confirming the
+> exact plan at this TTY (`DENIED` unattended). Elevated research is an operator action, not an IHRA
+> capability, and `experiments/cpu-boost/run_boost_matrix.py` under `sudo` is explicitly outside this
+> contract ([SAFETY_CONTRACTS §6.5](SAFETY_CONTRACTS.md)).
+
 ## 1. Design Philosophy: Graceful Degradation
 A portable hardware research agent must function seamlessly across diverse hardware architectures and privilege environments without crashing when a specific subsystem is missing.
 
