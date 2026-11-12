@@ -81,6 +81,7 @@ A partir de ahí el agente te explica tu hardware, te propone un plan y te ayuda
 |---|---|
 | `DEMONSTRATED` | Se midió bien y el efecto es real *en esta máquina* |
 | `NOT_DEMONSTRATED` | Todavía no hay suficiente evidencia; no lo cuentes como mejora |
+| `ROLLBACK_VERIFIED` | Se probó un cambio y se comprobó que quedó deshecho (`run-tier1`). No dice nada de velocidad: no se midió ningún workload |
 | `NO_SAFE_GAIN_FOUND` | Se probó de forma justa y nada seguro ayudó. ¡También vale saberlo! |
 | `REFUTED` / `DENY` | La afirmación era falsa o la acción no está permitida |
 
