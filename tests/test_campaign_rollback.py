@@ -154,6 +154,7 @@ class TestCampaignRollback(unittest.TestCase):
             evidence_base=self.evidence_base,
             repository_root=Path(__file__).resolve().parents[1],
             rollback_contract=contract,
+            fault_base=self.temp_path / "xdg" / "ihra" / "tier1-faults",
         )
         runner._verify_sandbox_binaries = Mock(return_value=dict(SANDBOX_BINARIES))
         return runner

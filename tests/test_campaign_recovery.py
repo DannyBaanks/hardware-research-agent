@@ -27,6 +27,7 @@ from core.executor import (
 )
 from core.planning import SyntheticExperimentProposal
 from core.recovery import inspect_synthetic_campaign
+from tests.fake_host import hermetic_contract, skip_or_fail
 from tests.tty_test_utils import authorize_in_pty
 
 
@@ -312,6 +313,7 @@ from unittest.mock import patch
 from core.experiment import SyntheticExperimentPlan, SyntheticExperimentRunner
 from core.executor import SyntheticWorkloadExecutor
 from core.planning import SyntheticExperimentProposal
+from tests.fake_host import hermetic_contract
 from tests.tty_test_utils import authorize_in_pty
 
 evidence_base = Path(sys.argv[1])
@@ -481,7 +483,14 @@ try:
 
     from core import experiment
     with patch.object(experiment.uuid, "uuid4", return_value=SimpleNamespace(hex=campaign_id)):
-        runner = SyntheticExperimentRunner(evidence_base=evidence_base)
+        # The sandbox is real; the monitored surface and the fault ledger are not,
+        # so the harness reaches the same gate on any machine that has Bubblewrap.
+        runner = SyntheticExperimentRunner(
+            evidence_base=evidence_base,
+            # Outside the evidence tree: its directories must stay private.
+            rollback_contract=hermetic_contract(ready_path.parent / f"host-{phase}"),
+            fault_base=evidence_base.parent / "tier1-faults",
+        )
         result = runner.run(
             plan,
             authorization=authorization,
@@ -583,7 +592,7 @@ except BaseException as exc:
         try:
             executor._sandbox_binaries()
         except SandboxUnavailableError as exc:
-            self.skipTest(f"Trusted Bubblewrap unavailable: {exc}")
+            skip_or_fail(self, f"trusted Bubblewrap is unavailable: {exc}")
 
         process, ready, evidence_base = self._start_sigkill_harness("during-sample")
         campaign_id = ready["campaign_id"]
@@ -632,7 +641,7 @@ except BaseException as exc:
         try:
             executor._sandbox_binaries()
         except SandboxUnavailableError as exc:
-            self.skipTest(f"Trusted Bubblewrap unavailable: {exc}")
+            skip_or_fail(self, f"trusted Bubblewrap is unavailable: {exc}")
 
         process, ready, evidence_base = self._start_sigkill_harness("after-receipt")
         campaign_id = ready["campaign_id"]
@@ -699,6 +708,9 @@ except BaseException as exc:
             executor=FakeExecutor(),
             evidence_base=evidence_base,
             repository_root=Path(__file__).resolve().parents[1],
+            # Outside the evidence tree: its directories must stay private.
+            rollback_contract=hermetic_contract(self.root / f"host-cut-{cut['id']}"),
+            fault_base=evidence_base.parent / "tier1-faults",
         )
         runner._verify_sandbox_binaries = Mock(
             return_value={

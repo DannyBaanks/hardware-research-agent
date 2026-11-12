@@ -1,0 +1,115 @@
+name: CI
+
+# IHRA has to reach the same verdict on any machine, so the suite is run twice:
+# once on a host with nothing installed (everything hardware-shaped is faked),
+# and once where the real sandbox is present and may not be skipped.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hermetic:
+    name: Hermetic suite (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Compile every module
+        run: python -m compileall -q core adapters tests experiments
+
+      - name: Poison the machine's own fault ledger
+        # A test that consults the real state directory would be denied by this
+        # record. The suite passing proves it never looked.
+        run: |
+          state="$RUNNER_TEMP/poisoned-state"
+          mkdir -p -m 700 "$state/ihra/tier1-faults"
+          chmod 700 "$state" "$state/ihra"
+          echo garbage > "$state/ihra/tier1-faults/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
+          echo "XDG_STATE_HOME=$state" >> "$GITHUB_ENV"
+
+      - name: Unit and adversarial suite
+        run: python -m unittest discover -s tests -v
+
+      - name: The suite wrote nothing into the state directory
+        run: |
+          test "$(find "$XDG_STATE_HOME" -type f | wc -l)" -eq 1
+
+      - name: The poisoned ledger really does deny
+        run: |
+          source .github/expect_exit.sh
+          expect_exit 1 python -m core.cli list-faults
+
+      - name: Read-only CLI contract
+        env:
+          XDG_STATE_HOME: ${{ runner.temp }}/clean-state
+        run: |
+          source .github/expect_exit.sh
+          python -m core.cli discover > /dev/null
+          python -m core.cli setup > /dev/null
+          expect_exit 0 python -m core.cli list-faults
+          expect_exit 0 python -m core.cli sentinel lscpu
+          # A state change and a forbidden tool are both refused.
+          expect_exit 1 python -m core.cli sentinel 'powerprofilesctl set balanced'
+          expect_exit 1 python -m core.cli sentinel 'wrmsr 0x1a0 0'
+          # The only state-changing command: no human at a TTY here, so it must
+          # refuse (the exit code depends on which precondition fails first).
+          expect_nonzero python -m core.cli run-tier1 --set balanced < /dev/null
+          python -m core.cli dry-run ada_d3cold_false_positive | grep -q '"verdict": "REFUTED"'
+          python -m core.cli dry-run no_safe_gain_found | grep -q '"verdict": "NOT_DEMONSTRATED"'
+          python -m core.cli verify-evidence fixtures/no_safe_gain_found/mock_benchmark.json \
+            | grep -q '"NOT_DEMONSTRATED": 1'
+          # A file that is not evidence is refused, not judged.
+          expect_exit 2 python -m core.cli verify-evidence README.md
+
+  sandbox:
+    name: Real Bubblewrap sandbox (system Python)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # Turns "capability missing, skipped" into a failure for the sandbox tests.
+      IHRA_REQUIRE_SANDBOX: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the sandbox and a compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap gcc
+
+      - name: Allow rootless user namespaces
+        # Ubuntu 24.04 blocks them through AppArmor by default; Bubblewrap needs
+        # them. The key is absent on older kernels, hence the fallback.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Unit and adversarial suite, sandbox required
+        run: /usr/bin/python3 -m unittest discover -s tests -v
+
+      - name: Fixed workload runs inside the real sandbox
+        env:
+          XDG_STATE_HOME: ${{ runner.temp }}/clean-state
+        run: |
+          /usr/bin/python3 -m core.cli run-synthetic sha256-chain-v1 | tee receipt.json
+          grep -q '"status": "COMPLETED"' receipt.json
+
+      - name: Node wrapper passes exit codes through
+        run: |
+          source .github/expect_exit.sh
+          expect_exit 0 node bin/ihra.mjs sentinel lscpu
+          expect_exit 1 node bin/ihra.mjs sentinel 'powerprofilesctl set balanced'

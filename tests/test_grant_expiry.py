@@ -15,6 +15,7 @@ from core.executor import WorkloadReceipt
 from core.sentinel import AuthorizationGrant, SentinelGate, SentinelVerdict
 
 from tests.test_synthetic_experiment import FakeExecutor
+from tests.fake_host import hermetic_contract
 from tests.tty_test_utils import authorize_in_pty
 
 
@@ -65,6 +66,7 @@ class TestGrantExpiry(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         temp_path = Path(self.temp.name)
         os.chmod(temp_path, 0o700)
+        self.temp_path = temp_path
         self.evidence_base = temp_path / "xdg" / "ihra" / "synthetic-experiments"
         self.repository_root = Path(__file__).resolve().parents[1]
 
@@ -73,6 +75,8 @@ class TestGrantExpiry(unittest.TestCase):
             executor=executor,
             evidence_base=self.evidence_base,
             repository_root=self.repository_root,
+            rollback_contract=hermetic_contract(self.temp_path),
+            fault_base=self.temp_path / "xdg" / "ihra" / "tier1-faults",
         )
         runner._verify_sandbox_binaries = Mock(
             return_value={

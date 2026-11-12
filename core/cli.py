@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from .discovery import HardwareDiscovery
+from .evidence import EvidenceError, evaluate_evidence_file
 from .cpu_power import CpuPowerInspector
 from .authorization import AuthorizationDenied, authorize_plan_from_tty
 from .sentinel import SentinelGate, SentinelVerdict, canonical_plan_digest, tier1_intervention_digest
@@ -151,6 +152,17 @@ def cmd_sentinel(args):
 def cmd_dry_run(args):
     receipt = DryRunExecutor().replay_fixture(args.fixture)
     print(json.dumps(receipt.to_dict(), indent=2))
+
+
+def cmd_verify_evidence(args):
+    # Exit 0 means the file was judged, whatever the verdicts: "no gain shown" is a
+    # result, not a failure. Only evidence that cannot be judged at all exits 2.
+    try:
+        report = evaluate_evidence_file(args.evidence, args.control)
+    except EvidenceError as exc:
+        print(json.dumps({"status": "DENIED", "verdict": "DENY", "reason": str(exc)}, indent=2))
+        sys.exit(2)
+    print(json.dumps(report, indent=2))
 
 
 def cmd_run_synthetic(args):
@@ -427,6 +439,22 @@ def main():
         help="Bundled synthetic fixture to replay",
     )
     p_dry.set_defaults(func=cmd_dry_run)
+
+    # verify-evidence
+    p_verify = subparsers.add_parser(
+        "verify-evidence",
+        help="Judge an existing measurement file with the AntiFake verifier; reads only that file",
+    )
+    p_verify.add_argument(
+        "evidence",
+        help="An IHRA evidence JSON object, or a matrix_*.jsonl from experiments/cpu-boost",
+    )
+    p_verify.add_argument(
+        "--control",
+        metavar="MODE:THREADS",
+        help="Boost matrix only: the job to use as the executed negative control, e.g. triad:12",
+    )
+    p_verify.set_defaults(func=cmd_verify_evidence)
 
     # run a single reviewed synthetic workload inside a rootless sandbox
     p_run = subparsers.add_parser(
