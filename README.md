@@ -91,6 +91,7 @@ From there the agent can explain your hardware, propose a plan, and help you mea
 | `python3 -m core.cli ada` | NVIDIA RTX 40-series status: driver power setting, unlock module, power state |
 | `python3 -m core.cli sentinel 'lscpu'` | Is this exact command on the read-only allowlist? (nothing is executed) |
 | `python3 -m core.cli dry-run ada_d3cold_false_positive` | Replays the "GPU that lied" case with sample data |
+| `python3 -m core.cli verify-evidence <file>` | Judges measurements you already have (a `matrix_*.jsonl` from the boost experiment, or an evidence JSON): medians, spread, and whether the gain is separated from noise. Reads only that file; runs nothing |
 | `python3 -m core.cli run-synthetic sha256-chain-v1` | Harmless sandboxed CPU test (needs `bubblewrap`) |
 | `python3 -m core.cli run-synthetic-experiment --proposal <file>` | Five timed samples in the sandbox, after you type `AUTHORIZE <sha256>` in this terminal |
 | `python3 -m core.cli inspect-synthetic-campaign <id>` | Read a finished or interrupted campaign back, digest by digest — reruns nothing |
