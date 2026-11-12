@@ -5,6 +5,8 @@ import io
 import json
 import os
 import signal
+import subprocess
+import sys
 import stat
 import tempfile
 import unittest
@@ -16,9 +18,11 @@ from core.cli import cmd_list_faults, cmd_run_tier1
 from core.cpu_power import monitored_state
 from core.experiment import SyntheticExperimentPlan, SyntheticExperimentRunner
 from core.recovery import (
+    FAULT_PENDING_CLOSE_OUT,
     FAULT_RESOLVED,
     FAULT_UNRESOLVED,
     FaultStateError,
+    close_intent_record,
     find_unresolved_faults,
     write_fault_record,
 )
@@ -34,6 +38,7 @@ from core.sentinel import (
 )
 from core.tier1 import (
     MAX_TIER1_OBSERVATIONS,
+    TIER1_VERDICT_ROLLBACK_VERIFIED,
     Tier1ExperimentRunner,
     build_tier1_plan,
 )
@@ -280,7 +285,9 @@ class TestTier1Safety(unittest.TestCase):
         authorization = self._grant()
         result = self._runner().run(self.plan, authorization)
         self.assertEqual(result.status, "COMPLETED", result.reason)
-        self.assertEqual(result.verdict, "DEMONSTRATED")
+        # Deliberately not DEMONSTRATED: that word means a measured effect, and
+        # Tier-1 measures none. What it proves is that the change was undone.
+        self.assertEqual(result.verdict, TIER1_VERDICT_ROLLBACK_VERIFIED)
         self.assertEqual(result.plan_sha256, self.digest)
         # The plan declares repetitions, and the campaign records exactly that
         # many observations: samples_completed is an observed count, not a literal.
@@ -338,7 +345,8 @@ class TestTier1Safety(unittest.TestCase):
 
         campaign = self._json_of(result, "campaign.json")
         self.assertEqual(campaign["status"], "COMPLETED")
-        self.assertEqual(campaign["verdict"], "DEMONSTRATED")
+        self.assertEqual(campaign["verdict"], TIER1_VERDICT_ROLLBACK_VERIFIED)
+        self.assertEqual(campaign["performance_verdict"], "NOT_DEMONSTRATED")
         self.assertEqual(campaign["rollback_status"], ROLLBACK_RESTORED_VERIFIED)
         self.assertFalse(campaign["performance_claim"])
         self.assertEqual(campaign["plan_sha256"], self.digest)
@@ -616,6 +624,227 @@ class TestTier1Safety(unittest.TestCase):
             self._runner().resolve("e" * 32)
         self.assertIn("Emergency fault record is unreadable", str(refused.exception))
         self.assertIn("not private", str(refused.exception))
+
+    # --- Write-ahead intent: the orphan marker AF-09 asks for -----------------
+
+    def test_intent_is_on_disk_before_the_host_is_changed_and_gone_after(self):
+        prestate = self._surface("performance")
+        host = self._host()
+        seen = []
+        original_run = host.run
+
+        def observing_run(argv, **kwargs):
+            if tuple(argv) == SET_BALANCED:
+                # The instant before the profile moves: what does the ledger say?
+                seen.append(find_unresolved_faults(self.fault_base))
+            return original_run(argv, **kwargs)
+
+        with patch("core.rollback.subprocess.run", side_effect=observing_run):
+            result = self._run()
+
+        self.assertEqual(result.status, "COMPLETED", result.reason)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(seen[0]), 1)
+        intent = seen[0][0]
+        self.assertEqual(intent["fault_id"], result.campaign_id)
+        self.assertEqual(intent["status"], FAULT_UNRESOLVED)
+        self.assertEqual(intent["rollback_status"], FAULT_PENDING_CLOSE_OUT)
+        self.assertIn("PENDING_CLOSE_OUT", intent["reason"])
+        self.assertEqual(intent["expected_state"], prestate)
+        self.assertEqual(intent["expected_restored_state"], "performance")
+        self.assertEqual(intent["restoration_command"], "powerprofilesctl set performance")
+        self.assertEqual(
+            intent["remediation"],
+            [
+                "powerprofilesctl get",
+                "powerprofilesctl set performance",
+                f"python3 -m core.cli resolve-fault {result.campaign_id}",
+            ],
+        )
+        self.assertEqual(intent["evidence_dir"], result.evidence_dir)
+        # Verified close-out: nothing is outstanding and no record is left behind.
+        self.assertEqual(find_unresolved_faults(self.fault_base), [])
+        self.assertEqual(list(self.fault_base.iterdir()), [])
+
+    def test_unwritable_intent_stops_the_campaign_before_any_change(self):
+        self._surface("performance")
+        host = self._host()
+        with patch(
+            "core.tier1.write_fault_record",
+            side_effect=FaultStateError("injected ledger failure"),
+        ):
+            result = self._run()
+        self.assertEqual(result.status, "ABORTED")
+        self.assertNotEqual(result.verdict, TIER1_VERDICT_ROLLBACK_VERIFIED)
+        self.assertIn("nothing was applied", result.reason)
+        self.assertIn("injected ledger failure", result.reason)
+        self.assertEqual([command for command in host.commands if command[1] == "set"], [])
+        self.assertEqual(host.profile, "performance")
+        rollback = self._json_of(result, "rollback.json")
+        self.assertEqual(rollback["status"], "VERIFIED_UNCHANGED")
+
+    def test_failed_restoration_replaces_the_intent_with_a_sealed_fault(self):
+        self._surface("performance")
+        self._host(fail_sets={"performance"})
+        result = self._run()
+        self.assertEqual(result.status, "ABORTED")
+        faults = find_unresolved_faults(self.fault_base)
+        self.assertEqual([fault["fault_id"] for fault in faults], [result.campaign_id])
+        self.assertEqual(faults[0]["rollback_status"], ROLLBACK_FAILED_STATE_DIFF)
+        self.assertNotIn("PENDING_CLOSE_OUT", faults[0]["reason"])
+        # A sealed fault describes a host left changed: it is resolved, never removed.
+        with self.assertRaisesRegex(FaultStateError, "sealed fault, not a pending intent"):
+            close_intent_record(result.campaign_id, base=self.fault_base)
+        self.assertEqual(len(find_unresolved_faults(self.fault_base)), 1)
+
+    def test_intent_that_cannot_be_removed_keeps_denying(self):
+        self._surface("performance")
+        host = self._host()
+        with patch(
+            "core.tier1.close_intent_record",
+            side_effect=FaultStateError("injected removal failure"),
+        ):
+            result = self._run()
+        self.assertEqual(result.status, "COMPLETED")
+        self.assertIn("pending intent was not removed", result.reason)
+        self.assertEqual(host.profile, "performance")
+        blocked = self._run()
+        self.assertEqual(blocked.status, "DENIED")
+        self.assertIn(result.campaign_id, blocked.reason)
+        # The host really is back, so a person can close it without changing anything.
+        record = self._runner().resolve(result.campaign_id)
+        self.assertEqual(record["status"], FAULT_RESOLVED)
+        self.assertEqual(self._run().status, "COMPLETED")
+
+    def test_closing_an_intent_that_does_not_exist_is_not_an_error(self):
+        self.assertFalse(close_intent_record("f" * 32, base=self.fault_base))
+        with self.assertRaisesRegex(FaultStateError, "Invalid fault identifier"):
+            close_intent_record("../escape", base=self.fault_base)
+
+    def test_sigkill_after_the_change_leaves_an_intent_that_denies_until_resolved(self):
+        """No handler runs on SIGKILL. The record written beforehand is all that is left."""
+        self._surface("performance")
+        child_code = r'''
+import json, os, signal, sys
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from core.sentinel import canonical_plan_digest, tier1_intervention_digest
+from core.tier1 import Tier1ExperimentRunner, build_tier1_plan
+from tests.tty_test_utils import authorize_in_pty
+
+host_root, xdg, repository_root = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+nodes = [host_root / relative for relative in json.loads(sys.argv[4])]
+state = {"profile": "performance"}
+
+def run(argv, **_kwargs):
+    argv = tuple(argv)
+    if argv == ("powerprofilesctl", "get"):
+        return Mock(stdout=state["profile"] + "\n")
+    if argv[:2] == ("powerprofilesctl", "set"):
+        state["profile"] = argv[2]
+        for node in nodes:
+            node.write_text(argv[2] + "\n", encoding="ascii")
+        # The profile has moved. Die the way no handler can intercept.
+        os.kill(os.getpid(), signal.SIGKILL)
+    raise AssertionError(argv)
+
+plan = build_tier1_plan("balanced", "performance")
+digest = canonical_plan_digest(plan)
+summary = json.dumps(plan, sort_keys=True, separators=(",", ":"), allow_nan=False)
+authorization = authorize_in_pty(
+    digest, digest, summary, intervention_sha256=tier1_intervention_digest(plan)
+)
+with patch("core.rollback.subprocess.run", side_effect=run):
+    Tier1ExperimentRunner(
+        sysfs_root=str(host_root),
+        evidence_base=xdg / "ihra" / "tier1-experiments",
+        repository_root=repository_root,
+        fault_base=xdg / "ihra" / "tier1-faults",
+    ).run(plan, authorization)
+print("campaign returned; the kill never happened")
+'''
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                child_code,
+                str(self.host_root),
+                str(self.xdg),
+                str(REPOSITORY_ROOT),
+                json.dumps([node.lstrip("/") for node in PROFILE_NODES]),
+            ],
+            cwd=REPOSITORY_ROOT,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(child.returncode, -signal.SIGKILL, child.stdout + child.stderr)
+
+        # The host is still on the changed profile and no close-out ever ran.
+        changed = monitored_state(str(self.host_root))
+        self.assertEqual(changed["platform_profile"], "balanced")
+        faults = find_unresolved_faults(self.fault_base)
+        self.assertEqual(len(faults), 1)
+        orphan = faults[0]
+        self.assertEqual(orphan["rollback_status"], FAULT_PENDING_CLOSE_OUT)
+        self.assertEqual(orphan["expected_restored_state"], "performance")
+        self.assertEqual(orphan["expected_state"]["platform_profile"], "performance")
+        bundle = Path(orphan["evidence_dir"])
+        self.assertEqual(
+            json.loads((bundle / "campaign.json").read_text())["status"], "RUNNING"
+        )
+
+        listed, code = self._list_faults()
+        self.assertEqual(code, 1)
+        self.assertEqual(listed["count"], 1)
+
+        # Every later campaign is denied, Tier-1 and sandbox alike.
+        host = self._host("balanced", mirror=False)
+        blocked = self._run()
+        self.assertEqual(blocked.status, "DENIED")
+        self.assertIn(orphan["fault_id"], blocked.reason)
+        self.assertEqual([command for command in host.commands if command[1] == "set"], [])
+        synthetic = SyntheticExperimentRunner(
+            evidence_base=self.xdg / "ihra" / "synthetic-experiments",
+            repository_root=REPOSITORY_ROOT,
+            fault_base=self.fault_base,
+        ).run(SyntheticExperimentPlan.fixed_repeatability_plan())
+        self.assertEqual(synthetic.status, "DENIED")
+        self.assertIn(orphan["fault_id"], synthetic.reason)
+
+        # Resolving proves the host; it does not repair it.
+        with self.assertRaisesRegex(FaultStateError, "stays unresolved"):
+            self._runner().resolve(orphan["fault_id"])
+        self.assertEqual(host.profile, "balanced")
+
+        # A person runs the remediation the record names, then resolves.
+        host.run(("powerprofilesctl", "set", "performance"))
+        record = self._runner().resolve(orphan["fault_id"])
+        self.assertEqual(record["status"], FAULT_RESOLVED)
+        self.assertEqual(record["resolved_profile"], "performance")
+        self.assertEqual(find_unresolved_faults(self.fault_base), [])
+        self.assertEqual(self._run().status, "COMPLETED")
+
+    def test_cli_reports_that_tier1_measured_no_performance(self):
+        self._surface("performance")
+        self._host()
+        plan_path = Path(self.temp.name) / "plan.json"
+        plan_path.write_text(json.dumps(self.plan), encoding="utf-8")
+        output = io.StringIO()
+        runner = self._runner()
+        with (
+            patch("core.cli.authorize_plan_from_tty", return_value=self._grant()),
+            patch("core.cli.Tier1ExperimentRunner", return_value=runner),
+            contextlib.redirect_stdout(output),
+        ):
+            cmd_run_tier1(argparse.Namespace(plan=str(plan_path), set_profile=None))
+        reported = json.loads(output.getvalue())
+        self.assertEqual(reported["status"], "COMPLETED")
+        self.assertEqual(reported["verdict"], TIER1_VERDICT_ROLLBACK_VERIFIED)
+        self.assertFalse(reported["performance_claim"])
+        self.assertEqual(reported["performance_verdict"], "NOT_DEMONSTRATED")
 
     def test_run_tier1_refuses_a_host_the_plan_no_longer_describes(self):
         self._surface("performance")

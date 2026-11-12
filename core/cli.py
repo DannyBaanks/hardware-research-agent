@@ -18,7 +18,12 @@ from .evidence import EvidenceError, evaluate_evidence_file
 from .cpu_power import CpuPowerInspector
 from .authorization import AuthorizationDenied, authorize_plan_from_tty
 from .sentinel import SentinelGate, SentinelVerdict, canonical_plan_digest, tier1_intervention_digest
-from .tier1 import Tier1ExperimentRunner, build_tier1_plan
+from .tier1 import (
+    TIER1_PERFORMANCE_VERDICT,
+    TIER1_VERDICT_ROLLBACK_VERIFIED,
+    Tier1ExperimentRunner,
+    build_tier1_plan,
+)
 from .recovery import FaultStateError, find_unresolved_faults, inspect_synthetic_campaign
 from .verifier import AntiFakeVerifier, VerificationVerdict
 from .rollback import RollbackController
@@ -326,12 +331,16 @@ def cmd_run_tier1(args):
 
     result = Tier1ExperimentRunner().run(plan, authorization)
     output = result.to_dict()
+    # Tier-1 runs no workload. Its best verdict says the change was undone, and
+    # this field says in the same breath that no gain was measured.
+    output["performance_claim"] = False
+    output["performance_verdict"] = TIER1_PERFORMANCE_VERDICT
     output["unattended_review"] = {
         "verdict": unattended.verdict.value,
         "reason": unattended.reason,
     }
     print(json.dumps(output, indent=2))
-    if result.verdict != "DEMONSTRATED":
+    if result.verdict != TIER1_VERDICT_ROLLBACK_VERIFIED:
         sys.exit(1)
 
 

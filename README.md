@@ -80,6 +80,7 @@ From there the agent can explain your hardware, propose a plan, and help you mea
 |---|---|
 | `DEMONSTRATED` | Measured properly and the effect is real *on this machine* |
 | `NOT_DEMONSTRATED` | Not enough evidence yet, so don't count it as a gain |
+| `ROLLBACK_VERIFIED` | A change was tried and provably put back (`run-tier1`). It says nothing about speed: no workload was measured |
 | `NO_SAFE_GAIN_FOUND` | Tested fairly and nothing safe helped. That's still useful to know! |
 | `REFUTED` / `DENY` | The claim was false, or the action isn't allowed |
 
@@ -122,6 +123,10 @@ put it back, and writes an emergency fault record. While that record is open, IH
 further campaign — sandbox included. You fix the machine by hand, then `resolve-fault <id>` proves the
 host matches what the record demands and closes it. That is the design: **IHRA stops, it does not
 repair.** There is no background service that restores anything when the PC boots.
+
+The same record covers a run that died too suddenly to clean up (`kill -9`, a power cut): IHRA writes
+it *before* changing the profile and deletes it only once the profile is proven back, so if the run
+never finished, `list-faults` still shows it and the steps above apply.
 
 ## Ready-made experiments and recipes
 

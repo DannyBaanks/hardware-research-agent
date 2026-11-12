@@ -686,6 +686,12 @@ class FaultStateError(RuntimeError):
 FAULT_UNRESOLVED = "UNRESOLVED"
 FAULT_RESOLVED = "RESOLVED"
 _FAULT_STATUSES = (FAULT_UNRESOLVED, FAULT_RESOLVED)
+# An intent is an unresolved fault written *before* the host is changed and
+# removed only after the restoration is verified. It is the orphan marker: a
+# campaign that dies where no handler runs (SIGKILL, power loss) leaves it
+# behind, so the gate still denies. It reuses the fault record's exact fields,
+# because records already on disk would stop parsing if the field set grew.
+FAULT_PENDING_CLOSE_OUT = "PENDING_CLOSE_OUT"
 _FAULT_ID = re.compile(r"^[0-9a-f]{32}$")
 _FAULT_FILE = re.compile(r"^([0-9a-f]{32})\.json$")
 _FAULT_FIELDS = {
@@ -837,6 +843,44 @@ def write_fault_record(record: Dict[str, object], base: Optional[Path] = None) -
             pass
         raise FaultStateError(f"Emergency fault record could not be written: {exc}") from exc
     return target
+
+
+def close_intent_record(fault_id: str, base: Optional[Path] = None) -> bool:
+    """Removes a write-ahead intent once its campaign has proven the host restored.
+
+    Only an intent can be removed this way. A sealed fault describes a host that
+    was left changed, and that record is closed by resolve_fault() against a fresh
+    observation, never deleted.
+    """
+    if not _FAULT_ID.fullmatch(str(fault_id)):
+        raise FaultStateError("Invalid fault identifier")
+    directory_fd = _open_fault_base(base)
+    if directory_fd is None:
+        return False
+    name = f"{fault_id}.json"
+    try:
+        try:
+            data = _read_regular_file(directory_fd, name)
+        except FileNotFoundError:
+            return False
+        except (OSError, _InspectionError) as exc:
+            raise FaultStateError(f"Emergency fault record is unreadable: {exc}") from exc
+        record = _parse_fault_record(data, name, fault_id)
+        if (
+            record["status"] != FAULT_UNRESOLVED
+            or record["rollback_status"] != FAULT_PENDING_CLOSE_OUT
+        ):
+            raise FaultStateError(
+                f"{name} is a sealed fault, not a pending intent: it must be resolved, not removed"
+            )
+        try:
+            os.unlink(name, dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        except OSError as exc:
+            raise FaultStateError(f"Pending intent could not be removed: {exc}") from exc
+        return True
+    finally:
+        os.close(directory_fd)
 
 
 def resolve_fault(

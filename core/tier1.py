@@ -9,6 +9,15 @@ restoration that cannot be verified writes an emergency fault record, and that
 record denies every later campaign until a person has run the remediation and
 resolved it.
 
+A pending-intent record is written to the same ledger before the profile is
+changed and removed only after the restoration is verified. A campaign killed
+where no handler can run (SIGKILL, power loss) therefore leaves that record
+behind, and the gate denies exactly as it does for a sealed fault. Nothing
+restores the host automatically: the record makes the orphan visible.
+
+A completed campaign's verdict is ROLLBACK_VERIFIED, not DEMONSTRATED. Tier-1
+runs no workload, so it reports performance_verdict NOT_DEMONSTRATED beside it.
+
 Tier-1 evidence is a sealed, manifest-hashed bundle beside the synthetic campaign
 tree, so synthetic artifact allowlists and historical bundles stay untouched. The
 read-only inspector covers synthetic campaigns only: whether a Tier-1 bundle proves
@@ -31,9 +40,11 @@ from .authorization import AuthorizationDenied, PlanAuthorization
 from .cpu_power import monitored_state
 from .experiment import ExperimentCampaignResult, _CampaignEvidence
 from .recovery import (
+    FAULT_PENDING_CLOSE_OUT,
     FAULT_UNRESOLVED,
     FaultStateError,
     _FAULT_FIELDS,
+    close_intent_record,
     find_unresolved_faults,
     resolve_fault,
     tier1_fault_base,
@@ -59,6 +70,17 @@ _FAULT_ID = re.compile(r"^[0-9a-f]{32}$")
 # The validator demands repetitions >= 3; without a ceiling a hand-written plan
 # could turn one authorized campaign into an unbounded read loop against the host.
 MAX_TIER1_OBSERVATIONS = 16
+# What a completed Tier-1 campaign proves: the change was applied and provably
+# undone. It measures no workload, so it must not borrow the word that means
+# "the effect is real" (DEMONSTRATED) from the performance vocabulary.
+TIER1_VERDICT_ROLLBACK_VERIFIED = "ROLLBACK_VERIFIED"
+TIER1_PERFORMANCE_VERDICT = "NOT_DEMONSTRATED"
+INTENT_REASON = (
+    "PENDING_CLOSE_OUT: a Tier-1 change was authorized and this record was written "
+    "before applying it. It is removed only after the restoration is verified, so "
+    "if you are reading it the campaign did not close out (killed, crashed or power "
+    "lost) and the host may still carry the change"
+)
 
 
 class CampaignInterrupted(Exception):
@@ -195,6 +217,7 @@ class Tier1ExperimentRunner:
         prestate_bytes = None
         campaign_record = None
         store = None
+        intent_written = False
 
         handlers = self._install_guard(contract, guard)
         try:
@@ -238,8 +261,17 @@ class Tier1ExperimentRunner:
                 "rollback_status": None,
                 "reason": None,
                 "performance_claim": False,
+                "performance_verdict": TIER1_PERFORMANCE_VERDICT,
             }
             store.write_json("campaign.json", campaign_record)
+
+            # Write-ahead: from here until the verified close-out the ledger says
+            # a change is outstanding. A failure to write it stops the campaign
+            # with the host untouched.
+            self._write_intent(
+                campaign_id, experiment_id, plan_digest, contract, prestate, str(store.path)
+            )
+            intent_written = True
 
             receipt = contract.apply_intervention(intervention["target_profile"])
             applied = intervention["target_profile"]
@@ -278,7 +310,7 @@ class Tier1ExperimentRunner:
                         ),
                     },
                 )
-                status, verdict = "COMPLETED", "DEMONSTRATED"
+                status, verdict = "COMPLETED", TIER1_VERDICT_ROLLBACK_VERIFIED
                 reason = (
                     "Authorized profile change applied and recorded; rollback status "
                     "is decided by the sealed close-out"
@@ -294,6 +326,9 @@ class Tier1ExperimentRunner:
                 return self._denied(f"Tier-1 host surface unavailable: {exc}")
             status, verdict = "ABORTED", "REFUTED"
             reason = f"Tier-1 campaign failed: {exc}"
+        except FaultStateError as exc:
+            status, verdict = "ABORTED", "REFUTED"
+            reason = f"Pending-intent record could not be written; nothing was applied: {exc}"
         finally:
             self._remove_guard(handlers)
 
@@ -321,10 +356,19 @@ class Tier1ExperimentRunner:
             evidence_dir = str(store.path)
             store.close()
 
+        if intent_written and record["status"] != ROLLBACK_FAILED_STATE_DIFF:
+            # The host is proven back, so nothing is outstanding. If the intent
+            # cannot be removed it stays and denies, and resolve-fault closes it.
+            try:
+                close_intent_record(campaign_id, base=self.fault_base)
+            except FaultStateError as exc:
+                reason = reason + f"; pending intent was not removed: {exc}"
+
         # A fault record is only owed for a host this campaign actually touched:
         # an interruption before any write left the machine where the human found it.
+        # Once the intent exists the sealed fault replaces it under the same id.
         if record["status"] == ROLLBACK_FAILED_STATE_DIFF and (
-            applied is not None or guard["restored"]
+            applied is not None or guard["restored"] or intent_written
         ):
             try:
                 self._record_fault(
@@ -502,6 +546,37 @@ class Tier1ExperimentRunner:
         }
         if set(fields) != _FAULT_FIELDS or not _FAULT_ID.fullmatch(campaign_id):
             raise FaultStateError("Fault record does not match the emergency fault contract")
+        return write_fault_record(fields, base=self.fault_base)
+
+    def _write_intent(
+        self, campaign_id, experiment_id, plan_digest, contract, prestate, evidence_dir
+    ) -> Path:
+        fields = {
+            "schema_version": 1,
+            "fault_id": campaign_id,
+            "recorded_at": _utc_now(),
+            "status": FAULT_UNRESOLVED,
+            "reason": INTENT_REASON,
+            "rollback_status": FAULT_PENDING_CLOSE_OUT,
+            "experiment_id": experiment_id if isinstance(experiment_id, str) else None,
+            "campaign_id": campaign_id,
+            "plan_sha256": plan_digest,
+            "expected_state": prestate,
+            "observed_state": None,
+            "restoration_command": contract.restoration_command,
+            "expected_restored_state": contract.prestate_profile,
+            "remediation": [
+                "powerprofilesctl get",
+                contract.restoration_command,
+                f"python3 -m core.cli resolve-fault {campaign_id}",
+            ],
+            "evidence_dir": evidence_dir,
+            "resolved_at": None,
+            "resolved_state": None,
+            "resolved_profile": None,
+        }
+        if set(fields) != _FAULT_FIELDS or not _FAULT_ID.fullmatch(campaign_id):
+            raise FaultStateError("Intent record does not match the emergency fault contract")
         return write_fault_record(fields, base=self.fault_base)
 
     def _install_guard(self, contract: RollbackContract, guard):
