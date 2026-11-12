@@ -192,7 +192,19 @@ class SyntheticWorkloadExecutor:
         runner_digest = hashlib.sha256(runner_bytes).hexdigest()
         if runner_digest != self.RUNNER_SHA256:
             raise ValueError("Fixed workload runner does not match the reviewed version")
-        if not hasattr(os, "memfd_create"):
+        # Some Python builds ship without the sealing constants. That is a missing
+        # capability, so it must end as a FAILED receipt, never as a traceback.
+        if not hasattr(os, "memfd_create") or not all(
+            hasattr(fcntl, name)
+            for name in (
+                "F_ADD_SEALS",
+                "F_GET_SEALS",
+                "F_SEAL_SEAL",
+                "F_SEAL_SHRINK",
+                "F_SEAL_GROW",
+                "F_SEAL_WRITE",
+            )
+        ):
             raise OSError("Sealed in-memory runner files are required on this platform")
         runner_fd = os.memfd_create(
             "ihra-fixed-workload-runner",

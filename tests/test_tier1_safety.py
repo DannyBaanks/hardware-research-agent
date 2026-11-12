@@ -587,6 +587,7 @@ class TestTier1Safety(unittest.TestCase):
 
     def test_resolve_fault_reports_an_unreadable_record_as_a_denial(self):
         self._surface("performance")
+        self._host("performance")
         path = write_fault_record(
             {
                 "schema_version": 1,

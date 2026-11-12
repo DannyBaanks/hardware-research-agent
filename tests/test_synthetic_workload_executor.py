@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core.executor import SandboxUnavailableError, SyntheticWorkloadExecutor
+from tests.fake_host import MEMFD_SEALS_AVAILABLE, skip_or_fail
 
 
 class TestSyntheticWorkloadExecutor(unittest.TestCase):
@@ -22,6 +23,11 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         ).encode()
         self.process = Mock(returncode=0)
 
+    def _require_sealing(self):
+        # These tests fake the sandbox process but seal the real runner bytes.
+        if not MEMFD_SEALS_AVAILABLE:
+            skip_or_fail(self, "this Python build exposes no memfd sealing constants")
+
     def _mock_process(self, output=None, failure=None):
         return (
             patch.object(self.executor, "_sandbox_binaries", return_value=("/usr/bin/bwrap", "/usr/bin/python3")),
@@ -34,6 +40,7 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         )
 
     def test_runs_only_the_fixed_workload_and_verifies_parent_digest(self):
+        self._require_sealing()
         binary_patch, popen_patch, collect_patch = self._mock_process()
         with binary_patch, popen_patch as popen, collect_patch:
             with patch("core.executor.time.monotonic", side_effect=[10.0, 10.25]):
@@ -54,6 +61,7 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         self.assertEqual(len(popen.call_args.kwargs["pass_fds"]), 1)
 
     def test_rejects_mismatched_hash(self):
+        self._require_sealing()
         result = json.loads(self.output)
         result["output_sha256"] = "0" * 64
         binary_patch, popen_patch, collect_patch = self._mock_process(
@@ -68,6 +76,7 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         self.assertIn("fixed contract", receipt.reason)
 
     def test_rejects_nonfinite_workload_elapsed_time(self):
+        self._require_sealing()
         result = json.loads(self.output)
         result["elapsed_seconds"] = float("nan")
         binary_patch, popen_patch, collect_patch = self._mock_process(
@@ -81,6 +90,7 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         self.assertIsNone(receipt.output_sha256)
 
     def test_rejects_unreasonably_large_elapsed_integer(self):
+        self._require_sealing()
         result = json.loads(self.output)
         result["elapsed_seconds"] = 10 ** 1000
         binary_patch, popen_patch, collect_patch = self._mock_process(
@@ -105,6 +115,20 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         self.assertEqual(receipt.sandboxed_processes_started, 0)
         popen.assert_not_called()
 
+    def test_missing_sealing_support_is_a_failed_receipt_not_a_crash(self):
+        binaries = ("/usr/bin/bwrap", "/usr/bin/python3")
+        with (
+            patch.object(self.executor, "_sandbox_binaries", return_value=binaries),
+            patch("core.executor.fcntl", SimpleNamespace()),
+            patch("core.executor.subprocess.Popen") as popen,
+        ):
+            receipt = self.executor.run(self.executor.WORKLOAD_ID)
+
+        self.assertEqual(receipt.status, "FAILED")
+        self.assertIn("Sealed in-memory runner files are required", receipt.reason)
+        self.assertEqual(receipt.sandboxed_processes_started, 0)
+        popen.assert_not_called()
+
     def test_rejects_unsupported_workload_id(self):
         with self.assertRaisesRegex(ValueError, "Unsupported workload"):
             self.executor.run("user-provided-command")
@@ -124,6 +148,7 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         self.assertIsNone(trusted)
 
     def test_reports_sandbox_timeout_as_failure(self):
+        self._require_sealing()
         binary_patch, popen_patch, collect_patch = self._mock_process(
             output=b"", failure="Workload exceeded wall-clock timeout"
         )
@@ -135,6 +160,7 @@ class TestSyntheticWorkloadExecutor(unittest.TestCase):
         self.assertIn("timeout", receipt.reason)
 
     def test_interrupt_terminates_the_process_group(self):
+        self._require_sealing()
         self.process.pid = 12345
         binary_patch, popen_patch, _ = self._mock_process()
         with binary_patch, popen_patch, \

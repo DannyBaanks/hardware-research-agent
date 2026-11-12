@@ -16,6 +16,7 @@ from core.experiment import (
 from core.executor import SandboxUnavailableError, SyntheticWorkloadExecutor, WorkloadReceipt
 from core.planning import SyntheticExperimentProposal
 
+from tests.fake_host import MEMFD_SEALS_AVAILABLE, hermetic_contract, skip_or_fail
 from tests.tty_test_utils import authorize_in_pty
 
 
@@ -207,6 +208,8 @@ class TestSyntheticExperimentRunner(unittest.TestCase):
             executor=executor,
             evidence_base=self.evidence_base,
             repository_root=Path(__file__).resolve().parents[1],
+            rollback_contract=hermetic_contract(self.temp_path),
+            fault_base=self.temp_path / "xdg" / "ihra" / "tier1-faults",
         )
         runner._verify_sandbox_binaries = Mock(
             side_effect=binary_check
@@ -407,6 +410,9 @@ class TestSyntheticExperimentRunner(unittest.TestCase):
         self.assertEqual(executor.calls, 0)
 
     def test_nc2_exit_zero_with_wrong_digest_aborts_and_preserves_receipt(self):
+        # The sandbox process is faked, but the real runner bytes are sealed.
+        if not MEMFD_SEALS_AVAILABLE:
+            skip_or_fail(self, "this Python build exposes no memfd sealing constants")
         executor = SyntheticWorkloadExecutor()
         child_result = {
             "workload_id": self.plan.workload_id,
@@ -465,6 +471,9 @@ class TestSyntheticExperimentRunner(unittest.TestCase):
         object.__setattr__(plan, "samples", 5)
 
     def test_nc6_incomplete_receipt_is_rejected(self):
+        # The sandbox process is faked, but the real runner bytes are sealed.
+        if not MEMFD_SEALS_AVAILABLE:
+            skip_or_fail(self, "this Python build exposes no memfd sealing constants")
         executor = SyntheticWorkloadExecutor()
         malformed_result = {
             "workload_id": self.plan.workload_id,
@@ -530,7 +539,10 @@ class TestSyntheticExperimentRunner(unittest.TestCase):
         impostor.chmod(0o700)
         executor = SyntheticWorkloadExecutor()
         with patch.dict(os.environ, {"PATH": str(fake_bin)}):
-            bubblewrap, python = executor._sandbox_binaries()
+            try:
+                bubblewrap, python = executor._sandbox_binaries()
+            except SandboxUnavailableError as exc:
+                skip_or_fail(self, f"trusted Bubblewrap is unavailable: {exc}")
         self.assertNotEqual(Path(bubblewrap), impostor)
         self.assertTrue(Path(bubblewrap).is_absolute())
         self.assertTrue(Path(python).is_absolute())
